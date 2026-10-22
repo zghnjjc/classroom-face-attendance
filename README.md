@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)
 
-> CI 徽章仅在首次推送并运行工作流后才会显示真实状态。
+> CI 徽章显示最新工作流运行状态。
 
 > [!WARNING]
 > **隐私提示**：人脸图像与人脸模板属于敏感个人信息。请只采集本人（或未成年人监护人）明确知情同意的样本，并遵守所在学校与当地法律的要求。
@@ -185,7 +185,7 @@ py -3.11 -m venv .venv
 
 ## 测试与 CI
 
-当前仓库测试套件共 **135 项** unittest，覆盖 9 个测试文件。测试使用临时数据库、合成图片与模拟相机，不依赖真实人脸、真实摄像头或生产数据库。
+当前仓库测试套件共 **136 项** unittest，覆盖 9 个测试文件。测试使用临时数据库、合成图片与模拟相机，不依赖真实人脸、真实摄像头或生产数据库。
 
 在仓库根目录执行：
 
@@ -200,7 +200,7 @@ py -3.11 -m venv .venv
 - 大多数 GUI 测试会创建真实 Tk 根窗口，因此需要**桌面图形会话**；无头环境需使用 Windows runner 或 Linux + Xvfb。
 - 测试会写入临时目录，不需要也不应使用正式 `attendance.db`。
 - CI 工作流位于 `.github/workflows/tests.yml`：Windows + Python 3.11 + 依赖缓存 + `pip check` + Tk 冒烟 + 全量 unittest，权限为 `contents: read`。
-- README 中的 CI 徽章状态由首次推送后的 GitHub Actions 运行结果决定；当前尚未运行。
+- README 中的 CI 徽章状态由首次推送后的 GitHub Actions 运行结果决定；运行记录见仓库 Actions 页面。
 
 测试说明与覆盖范围见 [docs/testing.md](docs/testing.md)。
 
@@ -268,7 +268,7 @@ classroom-face-attendance/
 │  ├─ architecture.md          # 模块分层与数据流
 │  ├─ design/business-rules.md # 考勤规则详细版
 │  └─ images/.gitkeep          # 截图/GIF 占位（需使用虚构数据与打码）
-├─ tests/                      # 9 个 unittest 文件，135 项
+├─ tests/                      # 9 个 unittest 文件，136 项
 ├─ GUI.py                      # 角色入口选择器
 ├─ student_app.py              # 学生签到端
 ├─ admin_app.py                # 教师管理端

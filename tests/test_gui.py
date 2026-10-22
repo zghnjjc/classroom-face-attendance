@@ -13,7 +13,7 @@ import numpy as np
 from admin_app import AdminApp,AdminLogin
 from attendance_store import AttendanceStore
 from student_app import StudentApp
-from ui_common import CameraView
+from ui_common import BaseWindow, CameraView
 
 
 class FakeCamera:
@@ -47,6 +47,21 @@ class GuiTests(unittest.TestCase):
         sid=self.store.create_session("测试课程","一班",now-timedelta(minutes=1),now+timedelta(hours=1))
         self.store.open_session(sid)
         return sid
+
+    def test_header_date_supports_ascii_only_time_locale(self):
+        class AsciiLocaleDate(datetime):
+            def strftime(self, pattern):
+                pattern.encode("ascii")
+                return super().strftime(pattern)
+
+        with patch("ui_common.datetime") as clock:
+            clock.now.return_value = AsciiLocaleDate(2026, 1, 2)
+            BaseWindow(self.root, "Test", "Date header", async_io=False)
+        self.root.update_idletasks()
+        header = self.root.winfo_children()[0]
+        texts = [str(widget.cget("text")) for widget in header.winfo_children()
+                 if widget.winfo_class() == "Label"]
+        self.assertIn("2026年01月02日", texts)
 
     def test_student_has_no_management_controls_and_waits_for_session(self):
         app=StudentApp(self.root,self.store,worker_factory=FakeCamera, async_io=False)
