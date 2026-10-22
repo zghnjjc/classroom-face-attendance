@@ -1,0 +1,139 @@
+# 测试说明 / Testing
+
+## 1. 当前状态
+
+- 测试框架：Python 标准库 `unittest`（未使用 pytest）。
+- 测试规模：**135 项**，分布在 `tests/` 下 9 个文件中。
+- 运行环境：Windows 10/11 + Python 3.11（开发环境在 3.11.9 验证）。
+- 测试特性：使用临时数据库、合成图片与模拟相机；不需要真实人脸、真实摄像头或生产数据库。
+
+> 本文中的“通过/覆盖”描述以当前仓库代码为准。CI 工作流已提供，但仓库内不附带运行记录或截图，也不声称工作流已在 GitHub 上执行过。
+
+## 2. 快速运行
+
+在**仓库根目录**执行：
+
+```powershell
+py -3.11 -m venv .venv
+./.venv/Scripts/python.exe -m pip install -r requirements-lock.txt
+./.venv/Scripts/python.exe -m pip check
+./.venv/Scripts/python.exe -m unittest discover -s tests -v
+```
+
+只运行单个文件或按名称筛选用例：
+
+```powershell
+./.venv/Scripts/python.exe -m unittest discover -s tests -p "test_system.py" -v
+./.venv/Scripts/python.exe -m unittest discover -s tests -v -k late_threshold
+```
+
+注意：
+
+- **必须在仓库根目录运行**：测试按项目根目录导入模块；在 `tests/` 子目录或仓库外运行可能出现 `ModuleNotFoundError`。
+- 需要真实**桌面图形会话**：8 个测试文件会创建真实 Tk 根窗口；无头环境需 Windows runner 或 Linux + Xvfb。
+- 测试会写入临时目录，**不应**使用正式 `attendance.db`；如担心污染，先在干净副本中运行。
+- Windows 终端中文输出建议设置 `PYTHONUTF8=1`（CI 已设置）。
+
+## 3. 测试隔离（hermetic 设计）
+
+测试不依赖仓库中的运行数据，主要手段包括：
+
+- 每个用例使用 `tempfile.TemporaryDirectory()` 创建临时数据目录/数据库，结束后自动清理。
+- 使用合成图片或测试现场生成的小图，不读取 `dataset/`。
+- 相机通过 `FakeCamera` / `DeferredCamera` 或打补丁替换，不打开真实设备。
+- 模型/数据集路径通过补丁或参数指向临时目录。
+- 时间相关规则通过显式传入时间参数或可控时钟验证，减少墙钟依赖（少数 GUI 用例仍依赖短时轮询）。
+- 空项目用例验证“不会自动恢复示例数据”。
+
+因此 CI 不需要摄像头、示例人脸或训练好的模型，只需要能创建 Tk 窗口的桌面会话。
+
+## 4. 测试文件与覆盖范围
+
+| 文件 | 用例数 | 主要覆盖 |
+| --- | ---: | --- |
+| `tests/test_system.py` | 16 | 数据层核心：同日多课次、名单/停用/唯一开放课次、迟到/请假/缺勤/审计、名单快照、并发去重、批量导入原子性、密码哈希与锁定、Excel 导出属性、备份一致性、旧库迁移、连续确认与身份切换、画质门槛、模型训练往返与过期拒绝、资源锁、级联加载 |
+| `tests/test_business_rules.py` | 25 | 未开启课次不计缺勤、结束幂等、取消与原因、取消不参与报表、审计与取消同事务、原始到课时间保留、补签必须明确时间/未知、时间未确认、证据不可变、重复更正不重复写、审计失败回滚、名单快照/刷新/增补/移出/重新加入、预览令牌失效、停用与新课次、空名单、v2→v3 迁移、GUI 状态按钮与预览确认 |
+| `tests/test_regressions.py` | 26 | 并发开启课次、迟到阈值边界、零宽限、人工缺勤审计、人工结果不被刷脸覆盖、跨日时间校验、过期课次自动关闭、XLSX 导入文本学号/精度、导出文本与公式注入、管理页切换/焦点、学生端过期结果丢弃、相机停止/错误/重启、短学号遮挡、模板写入失败、后台回调异常、教师/学生联动、采集中途结束与追加编号、损坏模型清单、连续签到中模型变化与课次关闭、设备释放与资源锁 |
+| `tests/test_A_fixes.py` | 25 | 停用已训练学生不使模型失效、未训练学生不阻塞、样本变化与停用区分、相机驱动异常/读取超时/停止、日志脱敏、中文错误分类、旧口令升级、锁定递增、改密与离线重置、删除单个学生样本并重建、清空训练数据、回滚、取消写入不提交、相机手动停止、数据库锁下界面响应、启动损坏库重试、三入口启动守卫、权限错误提示、15 秒跨进程锁心跳恢复、IO/导出在后台、关闭窗口取消、后台超时不误报成功、学生端脱敏 |
+| `tests/test_attendance_filters.py` | 17 | 当天/周/月边界、学期默认与自定义（含结束当天）、按课次开始日期归属、不同范围结果、缺勤筛选排除未签到/请假/已签到、学生档案修改后快照仍正确、学期设置持久化与恢复默认、导出与筛选一致、空范围/非法查询不扩大、GUI 默认筛选、刷新保持筛选、午夜滚动、查询失败恢复、更正目标课次、GUI 导出使用当前筛选、学期对话框与父窗口 |
+| `tests/test_gui.py` | 7 | 学生端无管理控件且等待课次、教师结束课次后学生端停止、管理端登录前不暴露工具、首次设置密码校验、错误密码不进入管理、训练任务不阻塞 Tk、相机预览 PNG 渲染 |
+| `tests/test_login_feedback.py` | 8 | 剩余尝试次数与第五次锁定、锁定到期保留失败计数且下次锁定更长、只读状态取整且不重置、错误密码更新页面、倒计时禁用按钮/回车并在到期恢复、重开锁定页面显示倒计时且不消耗尝试、成功登录清零并取消定时器、异步过期状态不覆盖新失败且 Tk 保持响应 |
+| `tests/test_recovery.py` | 8 | 故障后管理端定时刷新发现新课次、学生端定时刷新、已保存结果重试显示与停止事件消费、课次切换后丢弃过期结果、课次行查询失败不提交半更新、相机启动查询错误保持按钮禁用、数据库失败仍处理提示与停止、关闭窗口后不再调度 |
+| `tests/test_empty_project.py` | 3 | 空种子不会恢复已删除示例数据、空管理端页面可切换、空学生端等待且不启动相机 |
+
+合计：135 项。
+
+## 5. GUI / 桌面依赖
+
+- `tests/test_gui.py`、`test_login_feedback.py`、`test_recovery.py`、`test_regressions.py`、`test_empty_project.py`、`test_business_rules.py`、`test_A_fixes.py`、`test_attendance_filters.py` 会创建真实 `tk.Tk()` 根窗口。
+- 无 `DISPLAY`（Linux 无头）会直接 `TclError`；Windows 服务/无交互会话也可能失败。
+- Windows 托管 runner 上 Tk 环境偶发异常时，可用“Tk smoke test”先定位环境问题；偶发失败可重跑。
+- 本仓库没有为 GUI 用例增加 `skipUnless` 环境开关；如未来需要在无头环境跳过 GUI 用例，可新增显式开关，但当前 CI 目标是有桌面的 Windows runner。
+
+## 6. CI
+
+工作流：`.github/workflows/tests.yml`。
+
+- 触发：push 到 `main`、Pull Request、手动触发；
+- 运行环境：`windows-latest` + Python 3.11；
+- 权限：`contents: read`；
+- 步骤：checkout → setup-python（pip 缓存，以 `requirements-lock.txt` 为 key）→ `pip install -r requirements-lock.txt` → `pip check` → Tk 冒烟 → `python -m unittest discover -s tests -v`；
+- 环境变量：`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`；
+- 超时：20 分钟；并发同分支自动取消旧任务。
+
+README 首屏的 CI 徽章在首次推送并运行工作流后才会显示真实状态；本仓库目前不包含 CI 运行结果截图。
+
+## 7. 手工验收摘要（脱敏）
+
+除自动化测试外，维护者曾在本机 Windows 环境完成手工验收，覆盖：
+
+- 空库启动、首次设置管理密码、导入名单、空页面切换；
+- 单名学生样本采集、画质提示、提前结束保留已保存样本、模型训练；
+- 创建课次、按班级生成名单快照、开启/结束/取消课次；
+- 学生端识别、重复签到只保留首条记录、人工结果不被重复刷脸覆盖；
+- 课次结束后学生端相机自动停止、手动停止与重新开始；
+- 人工更正、原始证据/更正历史查看、Excel 导出与筛选一致性；
+- 完整备份生成与数据库一致性检查、故障恢复提示；
+- 相机被占用/读取失败/重启等异常路径（使用本机设备与模拟异常）。
+
+说明：
+
+- 以上为**脱敏摘要**，不包含真实姓名、学号、日期、头像或现场记录；
+- 手工验收不能替代长期、多人、多场景验证；
+- 多人同时识别、弱光/逆光、照片/视频代刷、长时间连续运行等场景**未充分验证**；
+- 详细内部验收记录不随仓库发布。
+
+## 8. 未覆盖或难以自动化的部分
+
+- 真实摄像头硬件的兼容性、驱动异常与长时间稳定性；
+- 真实人脸在不同光线、角度、遮挡、口罩、多人场景下的误识别/漏识别；
+- 活体检测/防代刷能力（当前实现不具备，也不应作为测试通过项）；
+- Windows DPI 缩放、不同分辨率与字体渲染差异；
+- 打包发行版（PyInstaller 等）；
+- 多机并发、网络存储、杀毒软件拦截等部署环境差异；
+- GitHub Actions 的实际运行结果（需推送后验证）。
+
+## 9. 新增测试的建议
+
+- 继续使用 `unittest`，测试文件命名 `test_*.py`，放在 `tests/`。
+- 使用 `tempfile.TemporaryDirectory()` 与临时数据库；不要依赖 `attendance.db`、`dataset/`、`face_model.yml`。
+- 相机使用假对象或补丁；不要打开真实设备。
+- 时间相关逻辑尽量传入显式时间/可控时钟；避免依赖 `sleep` 的脆弱等待。
+- 新增业务规则时，优先在数据层加用例，再补 GUI 状态用例。
+- 测试数据必须为虚构/合成；禁止提交真实人脸、姓名、学号或含本机路径的夹具。
+- 若修改 GUI 测试，请确保在仓库根目录可分发现运行。
+
+## 10. 常见问题
+
+| 现象 | 可能原因与处理 |
+| --- | --- |
+| `ModuleNotFoundError: No module named 'app_config'` | 未在仓库根目录运行；切回根目录 |
+| `TclError: no display name and no $DISPLAY` | 无桌面/Xvfb；改用有图形会话的 Windows 或安装 Xvfb |
+| `Can't find a usable tk.tcl` | Python/Tk 安装异常（常见于托管 runner 偶发）；重装 Python 或重跑 CI；先跑 Tk 冒烟 |
+| 找不到 `cv2` 或 `cv2.face` | 未安装 `opencv-contrib-python`，或安装了其他 OpenCV 发行版冲突；按锁文件重装 |
+| 测试很慢/卡住 | GUI 用例会创建窗口；确认没有弹窗阻塞（如文件对话框/消息框）；使用 `-v` 定位用例 |
+| 中文输出乱码 | 设置 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8` |
+
+---
+
+相关文档：[数据与隐私](data-and-privacy.md) · [业务规则](design/business-rules.md) · [架构说明](architecture.md)

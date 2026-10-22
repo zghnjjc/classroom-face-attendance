@@ -1,0 +1,49 @@
+# ============================================================
+# Classroom Face Attendance (.gitignore)
+# Runtime data contains real names, student IDs, face images,
+# check-in records and password hashes. Never commit them.
+# ============================================================
+
+# ---- Python / env ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Runtime data (PII) ----
+attendance.db
+attendance.db-*
+*.sqlite
+*.sqlite3
+dataset/
+face_model.yml
+model_manifest.json
+backups/
+logs/
+*.log
+*.zip
+*.xlsx
+*.csv
+password_reset_*.db
+.camera.lock
+.samples.lock
+*.tmp.yml
+*.tmp.json
+*.tmp.xlsx
+*.tmp.zip
+
+# ---- IDE / OS ----
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.DS_Store
+Thumbs.db
+desktop.ini

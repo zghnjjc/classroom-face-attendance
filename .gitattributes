@@ -1,0 +1,30 @@
+# 统一换行与编码；Windows 批处理必须保持 CRLF
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.xml  text eol=lf
+*.toml text eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制/生成物：不做文本合并与 diff
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.gif  binary
+*.zip  binary
+*.db   binary
+*.db-wal binary
+*.db-shm binary
+*.xlsx binary
+
+# 如未来在仓库中保留模型/级联副本（不建议），关闭 diff：
+# face_model.yml -diff -text
+# haarcascade_frontalface_default.xml -diff -text

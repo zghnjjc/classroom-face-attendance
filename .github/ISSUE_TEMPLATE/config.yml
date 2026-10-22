@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用说明与隐私文档 / Documentation
+    url: https://github.com/zghnjjc/classroom-face-attendance/blob/main/docs/data-and-privacy.md
+    about: 安装、使用、数据位置、删除与备份说明；提问前请先阅读。
+  - name: 安全漏洞私密报告 / Security report
+    url: https://github.com/zghnjjc/classroom-face-attendance/security/advisories/new
+    about: 请勿公开披露漏洞，也不要上传真实人脸、姓名、学号或数据库。

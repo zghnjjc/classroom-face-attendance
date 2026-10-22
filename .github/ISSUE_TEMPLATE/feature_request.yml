@@ -1,0 +1,56 @@
+name: Feature request / 功能建议
+description: 建议新功能或改进（请先确认不涉及真实数据上传）
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **隐私提醒**：功能建议中不要包含真实姓名、学号、人脸图像、数据库、模型或备份。
+        > 截图请使用虚构数据并打码。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与问题
+      description: 请描述当前遇到的困难、使用场景与影响。
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的解决方案
+      description: 描述你希望程序如何工作；如有界面草图请使用虚构数据。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 学生端
+        - 教师端
+        - 数据层/数据库
+        - 相机与识别
+        - 导出与报表
+        - 安全/隐私
+        - 文档与工程化
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: 隐私、安全或兼容性影响（可选）
+      description: 是否涉及新增依赖、数据外传、生物特征处理、平台兼容性等。
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我理解本项目不接受真实学生数据，并且建议内容不依赖云端上传或未经同意的生物特征采集。
+          required: true

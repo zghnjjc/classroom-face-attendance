@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "课堂签到：选择入口",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/GUI.py",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "课堂签到：学生端",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/student_app.py",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "课堂签到：教师管理",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/admin_app.py",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

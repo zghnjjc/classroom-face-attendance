@@ -1,0 +1,96 @@
+name: Bug report / 缺陷报告
+description: 报告可复现的缺陷（请先阅读隐私要求，禁止上传真实人脸、姓名、学号与数据库）
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **隐私警告**：请勿上传真实人脸、姓名、学号、数据库、模型、备份、导出表格、含个人信息的日志或本机绝对路径。
+        > 需要演示时请使用虚构数据与合成图片；身份信息请打码或替换。
+  - type: checkboxes
+    id: privacy-confirm
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认本报告不包含任何真实学生/教师的人脸、姓名、学号、数据库、模型或备份数据。
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本
+      description: 例如 v0.1.0，或注明提交哈希
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他（未验证平台）
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本
+      description: 输出 python --version 的结果
+      placeholder: Python 3.11.9
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 受影响区域
+      options:
+        - 学生端签到
+        - 相机/采集
+        - 模型训练
+        - 学生名单/导入
+        - 课次管理
+        - 考勤记录/更正/导出
+        - 登录/管理密码
+        - 启动/安装
+        - 文档
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序列出最小复现步骤；使用虚构数据描述。
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 可附脱敏后的错误提示；不要粘贴完整数据库或含真实信息的日志。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志（可选）
+      description: 仅保留错误类型与关键调用位置；确认不含姓名、学号、口令、图像或本机路径。
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息（可选）
+      description: 其他有助于定位问题的信息，例如是否使用外接摄像头、窗口尺寸等。
