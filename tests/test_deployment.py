@@ -41,7 +41,8 @@ class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="classroom-deployment-")
         self.addCleanup(self.temporary.cleanup)
-        self.folder = Path(self.temporary.name)
+        # Windows TEMP may contain an 8.3 alias; production paths are resolved.
+        self.folder = Path(self.temporary.name).resolve()
         self.source = self.folder / "source"
         self.source.mkdir()
         self.target = self.folder / "target"

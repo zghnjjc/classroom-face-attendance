@@ -46,7 +46,7 @@ class DeferredCamera:
 class MaintenanceFixture(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.folder = Path(self.temporary.name)
+        self.folder = Path(self.temporary.name).resolve()
         self.store = AttendanceStore(self.folder / 'data' / 'attendance.db', seed_path=None)
         self.service = MaintenanceService(self.store)
         self.addCleanup(self.temporary.cleanup)

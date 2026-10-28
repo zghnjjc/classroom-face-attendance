@@ -16,7 +16,8 @@ class StartupPathTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='startup-paths-')
         self.addCleanup(self.temporary.cleanup)
-        self.folder = Path(self.temporary.name)
+        # Keep fault-injection paths consistent with resolved production paths.
+        self.folder = Path(self.temporary.name).resolve()
         self.program = self.folder / 'program'
         self.user = self.folder / 'user'
         self.data = self.folder / 'existing-data'

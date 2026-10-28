@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from tkinter import ttk
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -94,16 +95,32 @@ class UiExperienceTests(unittest.TestCase):
         self.root.update()
         self.assert_inside(app.create_session_button, app.pages["sessions"])
 
-    def test_short_maintenance_page_is_visible_on_first_selection(self):
-        app = self.admin(width=1180, height=1000)
+    def test_maintenance_page_is_visible_on_first_selection(self):
+        app = self.admin(width=940, height=600)
         app.notebook.select(app.pages['maintenance'])
         self.root.update()
         scroll = next(widget for widget in app.maintenance.winfo_children() if isinstance(widget, ScrollableFrame))
-        self.assertLessEqual(scroll.body.winfo_reqheight(), scroll.canvas.winfo_height())
-        self.assertTrue(scroll.canvas.winfo_ismapped(), '短维护页首次进入时不能显示为空白')
+        self.assertTrue(scroll.canvas.winfo_ismapped(), '维护页首次进入时不能显示为空白')
         camera = next(widget for widget in scroll.body.winfo_children()
                       if isinstance(widget, tk.Button) and widget.cget('text') == '独立摄像头检测')
         self.assertTrue(camera.winfo_viewable())
+        self.assert_inside(camera, scroll.canvas)
+
+    def test_short_scrollable_content_is_visible_on_first_map(self):
+        self.root.geometry('640x480')
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill='both', expand=True)
+        notebook.add(tk.Frame(notebook), text='Initial')
+        scroll = ScrollableFrame(notebook)
+        action = tk.Button(scroll.body, text='Short form action')
+        action.pack(anchor='w')
+        notebook.add(scroll, text='Short form')
+        self.root.update()
+        notebook.select(scroll)
+        self.root.update()
+        self.assertLessEqual(scroll.body.winfo_reqheight(), scroll.canvas.winfo_height())
+        self.assertTrue(scroll.canvas.winfo_ismapped(), '短表单首次进入时不能显示为空白')
+        self.assert_inside(action, scroll.canvas)
 
     def test_settings_last_action_is_reachable_and_scroll_bindings_are_released(self):
         app = self.admin()
