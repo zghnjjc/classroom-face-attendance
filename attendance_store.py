@@ -13,20 +13,28 @@ from datetime import datetime, timedelta
 from math import ceil
 from pathlib import Path
 
-from app_config import DATABASE_PATH, DATASET_DIR, MODEL_MANIFEST_PATH, MODEL_PATH, SEED_PATH
+from app_config import DATABASE_PATH, SEED_PATH
+from attendance_fields import (STATUS_TEXT, ARRIVED_STATUSES, ARRIVED_STATUS_SQL,
+                               is_time_unknown, arrival_time_note, excel_time, attendance_base_values)
+from audit_actions import (CORRECT_ATTENDANCE, FACE_CHECKIN, SAVE_FACE_EVIDENCE,
+                           CHANGE_ROSTER, CLOSE_SESSION, EXPIRE_SESSION, OPEN_SESSION, CANCEL_SESSION)
 from attendance_filters import default_semester_dates, validate_semester_dates
 from app_config import DB_READ_TIMEOUT, DB_WRITE_TIMEOUT, PASSWORD_ITERATIONS, LEGACY_PASSWORD_ITERATIONS
 from app_errors import ValidationError
 from task_runtime import checkpoint
+from course_schedule import CourseScheduleStore
+from teacher_dashboard import TeacherDashboardStore
+from attendance_reports import AttendanceReportStore
+from session_times import SCHEMA_VERSION, resolve_session_times
+from maintenance_tools import require_disk_space
+from face_lifecycle import initialize_schema, require_authorized
 
-STATUS_TEXT = {"present": "已签到", "late": "迟到", "leave": "请假", "absent": "缺勤",
-               "pending": "未签到", "not_started": "待开启", "cancelled": "已取消", "excluded": "已移出应到"}
 UNSET = object()
 
 # 明细、汇总与导出共同使用的状态判定；只有真正开启过的课次才能推导缺勤。
 ATTENDANCE_ROW_SQL = """SELECT ss.session_id,ss.student_id,ss.name,ss.group_name,ss.included,
     s.course_name,s.group_name AS session_group_name,s.starts_at AS session_starts_at,
-    s.ends_at AS session_ends_at,s.state AS session_state,
+    s.opens_at AS session_opens_at,s.late_at AS session_late_at,s.ends_at AS session_ends_at,s.state AS session_state,
     CASE WHEN ss.included=0 THEN 'excluded'
          WHEN s.state='draft' THEN 'not_started'
          WHEN s.state='cancelled' THEN 'cancelled'
@@ -43,10 +51,23 @@ def stamp(value=None):
     return (value or datetime.now()).replace(microsecond=0).isoformat()
 
 
-class AttendanceStore:
+class AttendanceStore(CourseScheduleStore, TeacherDashboardStore, AttendanceReportStore):
+    attendance_row_sql = ATTENDANCE_ROW_SQL
     def __init__(self, path=DATABASE_PATH, seed_path=SEED_PATH):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # 已有数据库先只读检查；拒绝未知版本时不能先改变 journal_mode 或结构。
+        if self.path.is_file() and self.path.stat().st_size:
+            with closing(sqlite3.connect(self.path.resolve().as_uri() + '?mode=ro', uri=True,
+                                        timeout=DB_READ_TIMEOUT)) as existing:
+                if existing.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'").fetchone():
+                    row = existing.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+                    try:
+                        version = int(row[0]) if row else 0
+                    except (TypeError, ValueError):
+                        raise ValueError('数据库版本无效，请使用对应版本的软件，未迁移数据。') from None
+                    if not 0 <= version <= SCHEMA_VERSION:
+                        raise ValueError('此数据库版本高于当前程序或无效，请使用对应版本的软件，未迁移数据。')
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript("""
@@ -79,13 +100,17 @@ class AttendanceStore:
                     BEGIN SELECT RAISE(ABORT,'原始人脸签到证据不可删除'); END;
             """)
             connection.execute("BEGIN IMMEDIATE")
+            version = int(self._get(connection, "schema_version", "0"))
+            if not 0 <= version <= SCHEMA_VERSION:
+                raise ValueError('此数据库版本高于当前程序或无效，请使用对应版本的软件，未迁移数据。')
             columns = {row[1] for row in connection.execute("PRAGMA table_info(students)")}
             if "group_name" not in columns:
                 connection.execute("ALTER TABLE students ADD COLUMN group_name TEXT NOT NULL DEFAULT '未分班'")
             if "active" not in columns:
                 connection.execute("ALTER TABLE students ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
             additions = {
-                "sessions": {"cancel_reason": "TEXT NOT NULL DEFAULT ''", "cancelled_at": "TEXT"},
+                "sessions": {"cancel_reason": "TEXT NOT NULL DEFAULT ''", "cancelled_at": "TEXT",
+                             "opens_at": "TEXT NOT NULL DEFAULT ''"},
                 "session_students": {"included": "INTEGER NOT NULL DEFAULT 1"},
                 "audit_log": {"actor_label": "TEXT NOT NULL DEFAULT ''", "actor_kind": "TEXT NOT NULL DEFAULT 'legacy_unknown'",
                               "before_json": "TEXT", "after_json": "TEXT"},
@@ -104,7 +129,6 @@ class AttendanceStore:
                     connection.execute("INSERT OR IGNORE INTO attendance(student_id,day,signed_at) VALUES(?,?,?)",
                                        (record["student_id"], record["signed_at"][:10], record["signed_at"]))
                 self._set(connection, "seed_imported", "1")
-            version = int(self._get(connection, "schema_version", "0"))
             if version < 2:
                 self._migrate_daily_records(connection)
             if version < 3:
@@ -113,6 +137,14 @@ class AttendanceStore:
                     SELECT session_id,student_id,signed_at,'face',?,'migrated_current'
                     FROM checkins WHERE method='face' AND signed_at IS NOT NULL""", (stamp(),))
                 self._set(connection, "schema_version", "3")
+            if version < 4:
+                connection.execute('UPDATE sessions SET opens_at=starts_at')
+                self._set(connection, 'schema_version', '4')
+            if version < 5:
+                initialize_schema(connection)
+                self._set(connection, 'schema_version', str(SCHEMA_VERSION))
+        from face_delete_recovery import recover_face_deletions
+        recover_face_deletions(self)
 
     @contextmanager
     def connect(self, write=False):
@@ -208,29 +240,44 @@ class AttendanceStore:
         with self.connect() as connection:
             return [dict(row) for row in connection.execute(query + " ORDER BY student_id", args)]
 
-    def import_students(self, rows):
-        prepared = [self.validate_student(*row) for row in rows]
+    @classmethod
+    def _prepare_import(cls, rows):
+        prepared = [cls.validate_student(*row) for row in rows]
         if not prepared:
             raise ValueError("文件没有学生数据。")
         if len({row[0] for row in prepared}) != len(prepared):
             raise ValueError("导入文件包含重复学号，请先修正。")
+        return prepared
+
+    def _import_students(self, connection, prepared):
+        for row in prepared:
+            checkpoint()
+            connection.execute("""INSERT INTO students(student_id,name,group_name) VALUES(?,?,?)
+                ON CONFLICT(student_id) DO UPDATE SET name=excluded.name,group_name=excluded.group_name""", row)
+        self._audit(connection, "批量导入学生", detail=f"共 {len(prepared)} 人，已有学生更新姓名和班级")
+
+    def import_students(self, rows):
+        prepared = self._prepare_import(rows)
         with self.connect(write=True) as connection:
-            for row in prepared:
-                connection.execute("""INSERT INTO students(student_id,name,group_name) VALUES(?,?,?)
-                    ON CONFLICT(student_id) DO UPDATE SET name=excluded.name,group_name=excluded.group_name""", row)
-            self._audit(connection, "批量导入学生", detail=f"共 {len(prepared)} 人，已有学生更新姓名和班级")
+            self._import_students(connection, prepared)
         return len(prepared)
 
-    def create_session(self, course_name, group_name, starts_at, ends_at, late_minutes=10, student_ids=None):
+    def create_session(self, course_name, group_name, starts_at, ends_at, late_minutes=10, student_ids=None, *,
+                       opens_at=None, late_at=None):
         course_name, group_name = course_name.strip(), group_name.strip()
         if not course_name or len(course_name) > 80 or not group_name or len(group_name) > 60:
             raise ValueError("请填写课程与班级，课程不超过 80 字，班级不超过 60 字。")
-        if starts_at >= ends_at or ends_at - starts_at > timedelta(days=1):
-            raise ValueError("结束时间须晚于开始时间，单次签到时长不能超过 24 小时。")
-        if not 0 <= int(late_minutes) <= 180:
-            raise ValueError("迟到宽限应为 0 至 180 分钟。")
-        late_at = min(starts_at + timedelta(minutes=int(late_minutes)), ends_at)
-        members = self.students(active_only=True, group_name=None if group_name == "全部学生" else group_name)
+        times = resolve_session_times(starts_at, ends_at, late_minutes, opens_at=opens_at, late_at=late_at)
+        with self.connect(write=True) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            members = self._session_members(connection, group_name, student_ids)
+            return self._insert_session(connection, course_name, group_name, times['starts_at'], times['ends_at'], late_minutes,
+                                        members, opens_at=times['opens_at'], late_at=times['late_at'])
+
+    @staticmethod
+    def _session_members(connection, group_name, student_ids=None):
+        members = [dict(row) for row in connection.execute("SELECT * FROM students WHERE active=1 ORDER BY student_id")
+                   if group_name == "全部学生" or row["group_name"] == group_name]
         if student_ids is not None:
             wanted = set(student_ids)
             members = [student for student in members if student["student_id"] in wanted]
@@ -238,12 +285,18 @@ class AttendanceStore:
                 raise ValueError("名单包含不存在、已停用或不属于该班级的学生。")
         if not members:
             raise ValueError("该班级没有启用的学生，请先维护学生名单。")
-        with self.connect(write=True) as connection:
-            session_id = connection.execute("""INSERT INTO sessions(course_name,group_name,starts_at,late_at,ends_at,created_at)
-                VALUES(?,?,?,?,?,?)""", (course_name, group_name, stamp(starts_at), stamp(late_at), stamp(ends_at), stamp())).lastrowid
-            connection.executemany("INSERT INTO session_students(session_id,student_id,name,group_name) VALUES(?,?,?,?)",
-                                   [(session_id, member["student_id"], member["name"], member["group_name"]) for member in members])
-            self._audit(connection, "创建课次", session_id, detail=f"{course_name} / {group_name} / {len(members)} 人")
+        return members
+
+    def _insert_session(self, connection, course_name, group_name, starts_at, ends_at, late_minutes, members, *, actor="",
+                        opens_at=None, late_at=None):
+        times = resolve_session_times(starts_at, ends_at, late_minutes, opens_at=opens_at, late_at=late_at)
+        session_id = connection.execute("""INSERT INTO sessions(course_name,group_name,opens_at,starts_at,late_at,ends_at,created_at)
+            VALUES(?,?,?,?,?,?,?)""", (course_name, group_name, stamp(times['opens_at']), stamp(times['starts_at']),
+                                      stamp(times['late_at']), stamp(times['ends_at']), stamp())).lastrowid
+        connection.executemany("INSERT INTO session_students(session_id,student_id,name,group_name) VALUES(?,?,?,?)",
+                               [(session_id, member["student_id"], member["name"], member["group_name"]) for member in members])
+        self._audit(connection, "创建课次", session_id, detail=f"{course_name} / {group_name} / {len(members)} 人", actor=actor,
+                    after={key: stamp(value) for key, value in times.items()})
         return session_id
 
     def _expire(self, connection, now):
@@ -251,9 +304,11 @@ class AttendanceStore:
         for row in expired:
             changed = connection.execute("UPDATE sessions SET state='closed' WHERE id=? AND state='open'", (row[0],)).rowcount
             if changed:
-                self._audit(connection, "课次到时关闭", row[0], actor_kind="system")
+                self._audit(connection, EXPIRE_SESSION, row[0], actor_kind="system")
 
-    def open_session(self, session_id, now=None):
+    def open_session(self, session_id, now=None, *, manual_reason=None, actor=""):
+        if manual_reason is not None:
+            manual_reason = self._reason(manual_reason)
         now = now or datetime.now()
         with self.connect(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -261,14 +316,19 @@ class AttendanceStore:
             session = connection.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
             if not session or session["state"] != "draft":
                 raise ValueError("只能开启尚未开始的课次。")
-            if not session["starts_at"] <= stamp(now) < session["ends_at"]:
+            if not session["opens_at"] <= stamp(now) < session["ends_at"]:
                 raise ValueError("当前时间不在课次的签到时间范围内。")
             if connection.execute("SELECT 1 FROM sessions WHERE state='open'").fetchone():
                 raise ValueError("已有课次正在签到，请先结束该课次。")
             if not connection.execute("SELECT 1 FROM session_students WHERE session_id=? AND included=1", (session_id,)).fetchone():
                 raise ValueError("课次应到名单为空，请先调整名单或取消课次。")
             connection.execute("UPDATE sessions SET state='open' WHERE id=?", (session_id,))
-            self._audit(connection, "开启签到", session_id)
+            self._audit(connection, OPEN_SESSION, session_id,
+                        detail=f"人工点名开课；原因：{manual_reason}" if manual_reason is not None else "", actor=actor)
+
+    def open_manual_session(self, session_id, reason, *, actor="", now=None):
+        """沿用时段及唯一开放课次规则，教师核实原因后可在没有模型时开课。"""
+        return self.open_session(session_id, now, manual_reason=self._reason(reason), actor=actor)
 
     def close_session(self, session_id):
         with self.connect(write=True) as connection:
@@ -279,7 +339,7 @@ class AttendanceStore:
             if session["state"] != "open":
                 raise ValueError("只能结束签到中的课次；待开启课次请使用取消。")
             connection.execute("UPDATE sessions SET state='closed' WHERE id=? AND state='open'", (session_id,))
-            self._audit(connection, "结束签到", session_id)
+            self._audit(connection, CLOSE_SESSION, session_id)
             return True
 
     def cancel_session(self, session_id, reason, actor=""):
@@ -293,7 +353,7 @@ class AttendanceStore:
                 raise ValueError("只能取消待开启课次；签到中的课次请使用结束。")
             connection.execute("UPDATE sessions SET state='cancelled',cancel_reason=?,cancelled_at=? WHERE id=?",
                                (reason, stamp(), session_id))
-            self._audit(connection, "取消课次", session_id, detail=reason, actor=actor,
+            self._audit(connection, CANCEL_SESSION, session_id, detail=reason, actor=actor,
                         before=session, after=self._session(connection, session_id))
             return True
 
@@ -301,20 +361,20 @@ class AttendanceStore:
         now = now or datetime.now()
         with self.connect() as connection:
             self._expire(connection, now)
-            row = connection.execute("SELECT * FROM sessions WHERE state='open' AND starts_at<=? AND ends_at>?",
+            row = connection.execute("SELECT * FROM sessions WHERE state='open' AND opens_at<=? AND ends_at>?",
                                      (stamp(now), stamp(now))).fetchone()
             return dict(row) if row else None
 
     def sessions(self):
         with self.connect() as connection:
             self._expire(connection, datetime.now())
-            return [dict(row) for row in connection.execute("""SELECT s.*,
+            return [dict(row) for row in connection.execute(f"""SELECT s.*,
                 CASE WHEN s.state IN ('open','closed') THEN
                     (SELECT COUNT(*) FROM session_students ss WHERE ss.session_id=s.id AND ss.included=1) ELSE 0 END AS expected,
                 (SELECT COUNT(*) FROM session_students ss WHERE ss.session_id=s.id AND ss.included=1) AS roster_count,
                 (SELECT COUNT(*) FROM checkins c JOIN session_students ss
                  ON ss.session_id=c.session_id AND ss.student_id=c.student_id
-                 WHERE c.session_id=s.id AND ss.included=1 AND c.status IN ('present','late')) AS arrived
+                 WHERE c.session_id=s.id AND ss.included=1 AND c.status IN ({ARRIVED_STATUS_SQL})) AS arrived
                 FROM sessions s ORDER BY starts_at DESC,id DESC""")]
 
     def session(self, session_id):
@@ -326,21 +386,23 @@ class AttendanceStore:
         with self.connect(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
             session = connection.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
-            if not session or session["state"] != "open" or not session["starts_at"] <= stamp(when) < session["ends_at"]:
+            if not session or session["state"] != "open" or not session["opens_at"] <= stamp(when) < session["ends_at"]:
                 raise ValueError("当前课次未开放签到或已结束。")
             member = connection.execute("""SELECT ss.name FROM session_students ss JOIN students s USING(student_id)
                 WHERE ss.session_id=? AND ss.student_id=? AND ss.included=1 AND s.active=1""", (session_id, student_id)).fetchone()
             if not member:
                 raise ValueError("该学生不在本课次名单中，或已被停用。")
+            require_authorized(connection, student_id, when)
+            require_authorized(connection, student_id)
             status = "late" if stamp(when) >= session["late_at"] else "present"
             cursor = connection.execute("INSERT OR IGNORE INTO checkins VALUES(?,?,?,?,?,?)",
                                         (session_id, student_id, status, stamp(when), "face", ""))
             evidence = connection.execute("INSERT OR IGNORE INTO face_evidence VALUES(?,?,?,?,?,?)",
                                           (session_id, student_id, stamp(when), "face", stamp(), "captured"))
             if cursor.rowcount:
-                self._audit(connection, "人脸签到", session_id, student_id, STATUS_TEXT[status], actor_kind="face_recognition")
+                self._audit(connection, FACE_CHECKIN, session_id, student_id, STATUS_TEXT[status], actor_kind="face_recognition")
             elif evidence.rowcount:
-                self._audit(connection, "保存首次人脸证据", session_id, student_id,
+                self._audit(connection, SAVE_FACE_EVIDENCE, session_id, student_id,
                             "保留已有人工结果", actor_kind="face_recognition")
             record = connection.execute("SELECT * FROM checkins WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
             return dict(record, inserted=bool(cursor.rowcount), name=member["name"])
@@ -358,59 +420,126 @@ class AttendanceStore:
             connection.execute("BEGIN IMMEDIATE")
             self._expire(connection, datetime.now())
             session = self._session(connection, session_id)
-            if session["state"] not in {"open", "closed"}:
-                raise ValueError("只有签到中或已结束的课次可以更正。")
-            if not connection.execute("SELECT 1 FROM session_students WHERE session_id=? AND student_id=? AND included=1", (session_id, student_id)).fetchone():
-                raise ValueError("该学生不在课次名单中。")
-            previous = connection.execute("SELECT * FROM checkins WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
-            before = dict(previous) if previous else dict(session_id=session_id, student_id=student_id,
-                status="absent" if session["state"] == "closed" else "pending", signed_at=None, method=None, note="")
-            original = connection.execute("SELECT signed_at FROM face_evidence WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
-            signed_at = before["signed_at"] if previous else (original[0] if original else None)
-            existing_unknown = bool(previous and previous["status"] in {"present","late"}
-                                    and previous["signed_at"] is None and arrival_time is UNSET)
-            if time_unconfirmed:
-                if arrival_time is not UNSET and arrival_time is not None:
-                    raise ValueError("实际到课时间与时间未确认不能同时填写。")
-                signed_at = None
-            elif arrival_time is not UNSET:
-                if not isinstance(arrival_time, datetime) or arrival_time.tzinfo is not None:
-                    raise ValueError("请填写有效的本地实际到课时间，或明确选择时间未确认。")
-                signed_at = stamp(arrival_time)
-            if status in {"present", "late"} and signed_at is None and not time_unconfirmed and not existing_unknown:
-                raise ValueError("人工补签须填写实际到课时间，或明确选择时间未确认。")
-            current_note = before["note"] if note is UNSET else str(note).strip()
-            if len(current_note) > 300:
-                raise ValueError("备注不超过 300 字。")
-            after = dict(session_id=session_id, student_id=student_id, status=status,
-                         signed_at=signed_at, method="manual", note=current_note)
-            detail = f"{before['status']} → {status}；原因：{reason}"
-            last = connection.execute("SELECT * FROM audit_log WHERE action='人工更正' AND session_id=? AND student_id=? ORDER BY id DESC LIMIT 1",
-                                      (session_id, student_id)).fetchone()
-            if (before == after and last and last["after_json"] == json.dumps(after,ensure_ascii=False,sort_keys=True)
-                    and last["detail"].partition("；原因：")[2] == reason and last["actor_label"] == actor.strip()):
-                return False
-            connection.execute("""INSERT INTO checkins VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,student_id)
-                DO UPDATE SET status=excluded.status,signed_at=excluded.signed_at,method=excluded.method,note=excluded.note""",
-                (session_id, student_id, status, signed_at, "manual", current_note))
-            self._audit(connection, "人工更正", session_id, student_id,
-                        detail, actor=actor, before=before, after=after)
-            return True
+            plan = self._correction_plan(connection, session, student_id, status, reason,
+                                         arrival_time, time_unconfirmed, actor, note)
+            return self._apply_correction(connection, plan, actor)
+
+    def _correction_plan(self, connection, session, student_id, status, reason,
+                         arrival_time=UNSET, time_unconfirmed=False, actor="", note=UNSET):
+        if session["state"] not in {"open", "closed"}:
+            raise ValueError("只有签到中或已结束的课次可以更正。")
+        if len(actor.strip()) > 80:
+            raise ValueError("操作署名不超过 80 字。")
+        session_id = session["id"]
+        member = connection.execute("SELECT * FROM session_students WHERE session_id=? AND student_id=? AND included=1",
+                                    (session_id, student_id)).fetchone()
+        if not member:
+            raise ValueError("该学生不在课次名单中。")
+        previous = connection.execute("SELECT * FROM checkins WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
+        before = dict(previous) if previous else dict(session_id=session_id, student_id=student_id,
+            status="absent" if session["state"] == "closed" else "pending", signed_at=None, method=None, note="")
+        original = connection.execute("SELECT * FROM face_evidence WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
+        signed_at = before["signed_at"] if previous else (original["signed_at"] if original else None)
+        existing_unknown = bool(previous and is_time_unknown(previous) and arrival_time is UNSET)
+        if time_unconfirmed:
+            if arrival_time is not UNSET and arrival_time is not None:
+                raise ValueError("实际到课时间与时间未确认不能同时填写。")
+            signed_at = None
+        elif arrival_time is not UNSET:
+            if not isinstance(arrival_time, datetime) or arrival_time.tzinfo is not None:
+                raise ValueError("请填写有效的本地实际到课时间，或明确选择时间未确认。")
+            signed_at = stamp(arrival_time)
+        if status in ARRIVED_STATUSES and signed_at is None and not time_unconfirmed and not existing_unknown:
+            raise ValueError("人工补签须填写实际到课时间，或明确选择时间未确认。")
+        current_note = before["note"] if note is UNSET else str(note).strip()
+        if len(current_note) > 300:
+            raise ValueError("备注不超过 300 字。")
+        after = dict(session_id=session_id, student_id=student_id, status=status,
+                     signed_at=signed_at, method="manual", note=current_note)
+        detail = f"{before['status']} → {status}；原因：{reason}"
+        last = connection.execute("SELECT * FROM audit_log WHERE action=? AND session_id=? AND student_id=? ORDER BY id DESC LIMIT 1",
+                                  (CORRECT_ATTENDANCE, session_id, student_id)).fetchone()
+        unchanged = (before == after and last and last["after_json"] == json.dumps(after, ensure_ascii=False, sort_keys=True)
+                     and last["detail"].partition("；原因：")[2] == reason and last["actor_label"] == actor.strip())
+        return {"student_id": student_id, "name": member["name"], "member": dict(member),
+                "evidence": dict(original) if original else None, "last_correction_id": last["id"] if last else None,
+                "before": before, "after": after, "detail": detail, "changed": not unchanged}
+
+    def _apply_correction(self, connection, plan, actor):
+        if not plan["changed"]:
+            return False
+        row = plan["after"]
+        connection.execute("""INSERT INTO checkins VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,student_id)
+            DO UPDATE SET status=excluded.status,signed_at=excluded.signed_at,method=excluded.method,note=excluded.note""",
+            (row["session_id"], row["student_id"], row["status"], row["signed_at"], "manual", row["note"]))
+        self._audit(connection, CORRECT_ATTENDANCE, row["session_id"], row["student_id"], plan["detail"],
+                    actor=actor, before=plan["before"], after=row)
+        return True
+
+    def _manual_attendance_plan(self, connection, session_id, student_ids, status, reason,
+                                arrival_time, time_unconfirmed, actor):
+        reason = self._reason(reason)
+        if status not in {"present", "late", "leave", "absent"}:
+            raise ValueError("请选择有效的人工考勤状态。")
+        ids = list(student_ids)
+        if not ids or any(not isinstance(sid, str) for sid in ids) or len(set(ids)) != len(ids):
+            raise ValueError("请选中学生，名单中不能有重复学号。")
+        session = self._session(connection, session_id)
+        rows = [self._correction_plan(connection, session, sid, status, reason, arrival_time,
+                                     time_unconfirmed, actor) for sid in sorted(ids)]
+        context = {"session": session, "rows": rows, "actor": actor.strip()}
+        token = hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return {"session": session, "rows": rows, "token": token,
+                "changed": sum(row["changed"] for row in rows), "total": len(rows)}
+
+    def preview_manual_attendance(self, session_id, student_ids, status, reason, *,
+                                  arrival_time=UNSET, time_unconfirmed=False, actor=""):
+        """预览只读考勤结果；绑定所选人员、时间、原因与原始证据。"""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._expire(connection, datetime.now())
+            return self._manual_attendance_plan(connection, session_id, student_ids, status, reason,
+                                                arrival_time, time_unconfirmed, actor)
+
+    def apply_manual_attendance(self, session_id, student_ids, status, reason, token, *,
+                                arrival_time=UNSET, time_unconfirmed=False, actor=""):
+        """确认时重新计算预览；所有结果和逐人更正历史在同一事务提交。"""
+        student_ids = tuple(student_ids)
+        with self.connect(write=True) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._expire(connection, datetime.now())
+            plan = self._manual_attendance_plan(connection, session_id, student_ids, status, reason,
+                                                arrival_time, time_unconfirmed, actor)
+            if not token or token != plan["token"]:
+                raise ValueError("课次、所选名单或考勤已变化，请重新预览后确认。")
+            for row in plan["rows"]:
+                checkpoint()
+                self._apply_correction(connection, row, actor)
+            if plan["changed"]:
+                self._audit(connection, "批量人工点名", session_id,
+                            detail=f"所选 {plan['total']} 人，登记 {plan['changed']} 人；原因：{self._reason(reason)}",
+                            actor=actor, after={"student_ids": sorted(student_ids), "status": status,
+                                                "changed": plan["changed"]})
+            return {"changed": plan["changed"], "unchanged": plan["total"] - plan["changed"]}
 
     def session_rows(self, session_id, now=None, include_removed=False):
         now = now or datetime.now()
         with self.connect() as connection:
             self._expire(connection, now)
             self._session(connection, session_id)
-            query = ATTENDANCE_ROW_SQL + " WHERE ss.session_id=:sid"
-            if not include_removed:
-                query += " AND ss.included=1"
-            return [dict(row) for row in connection.execute(query + " ORDER BY ss.student_id", {"sid":session_id,"now":stamp(now)})]
+            return self._session_rows(connection, session_id, now, include_removed)
+
+    @staticmethod
+    def _session_rows(connection, session_id, now, include_removed=False):
+        query = ATTENDANCE_ROW_SQL + " WHERE ss.session_id=:sid"
+        if not include_removed:
+            query += " AND ss.included=1"
+        return [dict(row) for row in connection.execute(query + " ORDER BY ss.student_id", {"sid":session_id,"now":stamp(now)})]
 
     def attendance_history(self, session_id, student_id):
         with self.connect() as connection:
             evidence = connection.execute("SELECT * FROM face_evidence WHERE session_id=? AND student_id=?", (session_id, student_id)).fetchone()
-            changes = [dict(row) for row in connection.execute("SELECT * FROM audit_log WHERE session_id=? AND student_id=? AND action='人工更正' ORDER BY id", (session_id, student_id))]
+            changes = [dict(row) for row in connection.execute("SELECT * FROM audit_log WHERE session_id=? AND student_id=? AND action=? ORDER BY id", (session_id, student_id, CORRECT_ATTENDANCE))]
             return {"evidence": dict(evidence) if evidence else None, "corrections": changes}
 
     def _roster_plan(self, connection, session_id, refresh, add_ids, remove_ids):
@@ -476,7 +605,7 @@ class AttendanceStore:
                 connection.execute("""INSERT INTO session_students(session_id,student_id,name,group_name,included)
                     VALUES(?,?,?,?,?) ON CONFLICT(session_id,student_id) DO UPDATE SET included=excluded.included""",
                     (session_id,row["student_id"],row["name"],row["group_name"],row["included"]))
-            self._audit(connection, "调整课次名单", session_id,
+            self._audit(connection, CHANGE_ROSTER, session_id,
                         detail=f"增补 {', '.join(plan['added']) or '无'}；移出 {', '.join(plan['removed']) or '无'}；原因：{reason}",
                         actor=actor, before=plan["before"], after=plan["after"])
             return True
@@ -641,58 +770,41 @@ class AttendanceStore:
         if session["state"] not in {"open", "closed"}:
             raise ValueError("待开启或已取消课次不参与考勤导出。")
         rows = self.session_rows(session_id)
-        values = [[i, row["student_id"], row["name"], row["group_name"], STATUS_TEXT[row["status"]],
-                   datetime.fromisoformat(row["signed_at"]) if row["signed_at"] else None,
-                   {"face": "人脸识别", "manual": "人工更正", "legacy": "历史迁移"}.get(row["method"], ""), row["note"] or "",
-                   datetime.fromisoformat(row["original_signed_at"]) if row["original_signed_at"] else None,
-                   "时间未确认" if row["status"] in {"present","late"} and not row["signed_at"] else ""]
+        values = [[i, *attendance_base_values(row),
+                   excel_time(row["original_signed_at"]), arrival_time_note(row),
+                   *[datetime.fromisoformat(session[key]) for key in ('opens_at', 'starts_at', 'late_at', 'ends_at')]]
                   for i, row in enumerate(rows, 1)]
         _write_excel(path, f"{session['course_name']} · {session['group_name']}",
-                     f"签到时段：{session['starts_at'].replace('T',' ')} 至 {session['ends_at'].replace('T',' ')}",
-                     ["序号", "学号", "姓名", "班级", "状态", "实际到课时间", "记录方式", "备注", "原始人脸签到时间", "到课时间说明"],
-                     values, widths=[9,27,16,22,13,24,16,45,24,20], date_columns=(6,9))
+                     f"开放签到：{session['opens_at'].replace('T',' ')}；正式上课：{session['starts_at'].replace('T',' ')}；迟到起点：{session['late_at'].replace('T',' ')}；关闭签到：{session['ends_at'].replace('T',' ')}",
+                     ["序号", "学号", "姓名", "班级", "状态", "实际到课时间", "记录方式", "备注", "原始人脸签到时间", "到课时间说明",
+                      "开放签到时间", "正式上课时间", "迟到起点", "关闭签到时间"],
+                     values, widths=[9,27,16,22,13,24,16,45,24,20,24,24,24,24], date_columns=(6,9,11,12,13,14))
 
     def export_attendance(self, path, starts_at, ends_at, status="all", session_id=None, title="考勤记录", now=None):
         rows = self.attendance_records(starts_at, ends_at, status, session_id, now)
-        values = [[i, row["student_id"], row["name"], row["group_name"], STATUS_TEXT[row["status"]],
-                   datetime.fromisoformat(row["signed_at"]) if row["signed_at"] else None,
-                   {"face": "人脸识别", "manual": "人工更正", "legacy": "历史迁移"}.get(row["method"], ""),
-                   row["note"], row["course_name"], row["session_id"], datetime.fromisoformat(row["session_starts_at"]),
-                   datetime.fromisoformat(row["original_signed_at"]) if row["original_signed_at"] else None,
-                   "时间未确认" if row["status"] in {"present","late"} and not row["signed_at"] else ""]
+        values = [[i, *attendance_base_values(row),
+                   row["course_name"], row["session_id"], datetime.fromisoformat(row["session_starts_at"]),
+                   excel_time(row["original_signed_at"]), arrival_time_note(row),
+                   *[datetime.fromisoformat(row[key]) for key in ('session_opens_at', 'session_late_at', 'session_ends_at')]]
                   for i, row in enumerate(rows, 1)]
-        subtitle = f"课次开始日期：{starts_at:%Y-%m-%d} 至 {ends_at-timedelta(days=1):%Y-%m-%d}；{'仅缺勤' if status=='absent' else '全部状态'}"
+        subtitle = f"正式上课日期：{starts_at:%Y-%m-%d} 至 {ends_at-timedelta(days=1):%Y-%m-%d}；{'仅缺勤' if status=='absent' else '全部状态'}"
         if session_id is not None:
             subtitle += f"；课次 #{session_id}"
         _write_excel(path, title, subtitle,
-                     ["序号", "学号", "姓名", "班级", "状态", "实际到课时间", "记录方式", "备注", "课程", "课次编号", "课次开始时间", "原始人脸签到时间", "到课时间说明"],
-                     values, widths=[9,27,16,22,13,24,16,45,28,12,24,24,20], date_columns=(6,11,12))
+                     ["序号", "学号", "姓名", "班级", "状态", "实际到课时间", "记录方式", "备注", "课程", "课次编号", "正式上课时间", "原始人脸签到时间", "到课时间说明",
+                      "开放签到时间", "迟到起点", "关闭签到时间"],
+                     values, widths=[9,27,16,22,13,24,16,45,28,12,24,24,20,24,24,24], date_columns=(6,11,12,14,15,16))
 
     def backup_archive(self, path):
-        path = Path(path)
-        if path.suffix.lower() != ".zip":
-            raise ValueError("备份文件必须使用 .zip 扩展名。")
-        temporary_zip = path.with_name(f".{path.stem}.tmp.zip")
-        try:
-            with tempfile.TemporaryDirectory(prefix="attendance-backup-") as temporary:
-                database = Path(temporary) / "attendance.db"
-                with self.connect() as source:
-                    with closing(sqlite3.connect(database)) as target:
-                        source.backup(target, pages=128, progress=lambda *args: checkpoint(), sleep=.05)
-                with zipfile.ZipFile(temporary_zip, "w", zipfile.ZIP_DEFLATED) as archive:
-                    archive.write(database, "attendance.db")
-                    for file in (MODEL_PATH, MODEL_MANIFEST_PATH):
-                        if file.exists():
-                            archive.write(file, file.name)
-                    for file in DATASET_DIR.glob("*"):
-                        checkpoint()
-                        if file.is_file() and not file.name.startswith("."):
-                            archive.write(file, "dataset/" + file.name)
-                    archive.writestr("backup_info.json", json.dumps({"created_at": stamp(), "schema_version": 3}, ensure_ascii=False))
-            checkpoint()
-            temporary_zip.replace(path)
-        finally:
-            temporary_zip.unlink(missing_ok=True)
+        """数据库、模型和样本统一属于当前数据库目录，锁也取自该目录。"""
+        from backup_service import create_backup
+        from resource_lock import ResourceLease
+        data = self.path.resolve().parent
+        with ResourceLease(data / '.samples.lock', '正在采集或训练，请完成后再备份。'):
+            info = create_backup(self, path, model=data / 'face_model.yml',
+                                 manifest=data / 'model_manifest.json', dataset=data / 'dataset')
+            self.record_backup_success()
+        return info
 
 
 def _write_excel(path, title, subtitle, headers, rows, widths=None, date_columns=(6,)):
@@ -701,6 +813,7 @@ def _write_excel(path, title, subtitle, headers, rows, widths=None, date_columns
     path = Path(path)
     if path.suffix.lower() != ".xlsx":
         raise ValueError("考勤导出文件必须使用 .xlsx 扩展名。")
+    require_disk_space(path.parent)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "考勤记录"

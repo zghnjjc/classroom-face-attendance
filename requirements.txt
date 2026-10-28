@@ -1,4 +1,4 @@
-# Python 3.11. Use only the contrib build, including face and GUI support.
-opencv-contrib-python>=4.13.0.92,<5
-numpy>=2.0,<3
-openpyxl>=3.1.5,<4
+# Runtime dependencies for Python 3.11 on Windows 10/11.
+# Install all dependencies: python -m pip install -r requirements.txt
+# Reuse the same tested versions as CI; maintain versions in the lock file.
+-r requirements-lock.txt

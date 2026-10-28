@@ -21,6 +21,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
+      CLASSROOM_DATA_DIR: ${{ runner.temp }}/classroom-unittest-data
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

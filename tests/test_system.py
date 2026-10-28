@@ -12,6 +12,7 @@ import numpy as np
 from openpyxl import load_workbook
 
 from attendance_store import AttendanceStore, read_student_import
+from _face_test_support import authorize_faces
 from camera_service import RecognitionStreak, quality_hint
 from face_utils import load_classifier, load_recognizer, read_gray, save_gray
 from resource_lock import ResourceLease
@@ -26,6 +27,7 @@ class StoreTests(unittest.TestCase):
         self.store.save_student("001","测试甲","一班")
         self.store.save_student("002","测试乙","一班")
         self.store.save_student("003","测试丙","二班")
+        authorize_faces(self.store)
         self.now=datetime.now().replace(microsecond=0)
 
     def tearDown(self):
@@ -123,8 +125,7 @@ class StoreTests(unittest.TestCase):
         dataset=self.folder/"dataset"; dataset.mkdir()
         save_gray(dataset/"001.0.jpg",np.random.default_rng(1).integers(50,200,size=(160,160),dtype=np.uint8))
         output=self.folder/"backup.zip"
-        with patch("attendance_store.MODEL_PATH",model), patch("attendance_store.MODEL_MANIFEST_PATH",manifest), patch("attendance_store.DATASET_DIR",dataset):
-            self.store.backup_archive(output)
+        self.store.backup_archive(output)
         with zipfile.ZipFile(output) as archive:
             restored=self.folder/"restored.db"; restored.write_bytes(archive.read("attendance.db"))
             self.assertEqual(archive.read("face_model.yml"),model.read_bytes())
@@ -185,12 +186,14 @@ class RecognitionTests(unittest.TestCase):
             prediction,distance=recognizer.predict(preprocess(read_gray(sample)))
             self.assertEqual(recognizer.getLabelInfo(prediction),student_id)
             self.assertLess(distance,1)
-            self.assertTrue(model_health({student_id},model,folder)[0])
+            self.assertTrue(model_health(model,folder)[0])
             sample.touch()
             # 保证文件时间不同，即使文件系统时间粒度较粗。
             import os
             os.utime(sample,ns=(sample.stat().st_atime_ns,sample.stat().st_mtime_ns+1000000000))
-            self.assertFalse(model_health({student_id},model,folder)[0])
+            self.assertTrue(model_health(model,folder)[0])
+            save_gray(sample,np.random.default_rng(2).integers(50,200,size=(160,160),dtype=np.uint8))
+            self.assertFalse(model_health(model,folder)[0])
 
     def test_resource_lock_is_exclusive_and_releases(self):
         with tempfile.TemporaryDirectory(prefix="lease-test-") as temporary:

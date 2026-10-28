@@ -15,6 +15,20 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+.build-tools/
+.build-wheels/
+build/
+dist/
+.test-data/
+.instances/
+.maintenance.lock
+.restore-journal.json*
+.restore-stage-*/
+.backup-build-*/
+.model-build-*/
+data_location.json
+data_location.tmp
+restore_status.json
 
 # ---- Runtime data (PII) ----
 attendance.db
@@ -33,6 +47,8 @@ logs/
 password_reset_*.db
 .camera.lock
 .samples.lock
+.automatic-backup.lock
+classroom-auto-*/
 *.tmp.yml
 *.tmp.json
 *.tmp.xlsx
@@ -47,3 +63,19 @@ password_reset_*.db
 .DS_Store
 Thumbs.db
 desktop.ini
+*.lnk
+
+# Local maintenance scratch and interrupted test folders
+.cleanup-state/
+polling-recovery-*/
+
+# Local development scratch / copied backups (must never be published)
+business-rules-*/
+classroom-first-use-*/
+exports/
+pip-*/
+pip-ephem-*/
+pip-install-*/
+pip-target-*/
+docs/history/
+open-source-review/

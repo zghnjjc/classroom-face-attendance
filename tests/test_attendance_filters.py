@@ -2,6 +2,7 @@
 
 import sqlite3
 import tempfile
+import time
 import tkinter as tk
 import unittest
 from datetime import date, datetime, timedelta
@@ -14,6 +15,7 @@ from openpyxl import load_workbook
 from admin_app import AdminApp
 from attendance_filters import default_semester_dates, record_date_range
 from attendance_store import AttendanceStore
+from _face_test_support import authorize_faces
 
 
 class DateRangeTests(unittest.TestCase):
@@ -44,6 +46,7 @@ class FilterFixture(unittest.TestCase):
         for sid, name in (("001", "甲"), ("002", "乙"), ("003", "丙")):
             self.store.save_student(sid, name, "一班")
         self.now = datetime(2026, 10, 21, 12)
+        authorize_faces(self.store)
 
     def closed_session(self, start, name="测试课程", signed=()):
         sid = self.store.create_session(name, "一班", start, start + timedelta(hours=1))
@@ -135,7 +138,10 @@ class FilterStoreTests(FilterFixture):
         self.assertEqual(sheet["B5"].number_format, "@")
         self.assertEqual(sheet["J5"].value, first)
         self.assertEqual(sheet["K5"].value, datetime(2026, 10, 21, 8))
-        self.assertEqual(sheet.auto_filter.ref, "A4:M6")
+        self.assertEqual(sheet.auto_filter.ref, "A4:P6")
+        self.assertEqual(sheet['N5'].value, datetime(2026, 10, 21, 8))
+        self.assertEqual(sheet['O4'].value, '迟到起点')
+        self.assertEqual(sheet['P4'].value, '关闭签到时间')
         self.assertIsNone(sheet["F5"].value)
 
     def test_empty_range_and_invalid_query_do_not_broaden_results(self):
@@ -207,21 +213,28 @@ class FilterGuiTests(FilterFixture):
         self.assertFalse(self.callback_errors)
 
     def test_midnight_moves_today_filter_without_showing_previous_day(self):
+        self.app.notebook.select(self.app.pages['records'])
+        self.root.update()
         choice = next(k for k, v in self.app.record_lookup.items() if v == self.first)
         self.choose(self.app.record_choice, self.app.record_combo, choice)
         self.clock.current += timedelta(days=1)
         self.app.tick()
+        self.root.update()
         self.assertEqual(self.app.record_period.get(), "当天")
         self.assertEqual(self.app.record_choice.get(), "全部课次")
         self.assertEqual(self.app.record_rows, [])
         self.assertIn("2026-10-22", self.app.record_range_label.cget("text"))
 
     def test_period_query_failure_recovers_without_resetting_filters(self):
+        self.app.notebook.select(self.app.pages['records'])
+        self.root.update()
         self.choose(self.app.record_status, self.app.record_status_combo, "缺勤")
         with patch.object(self.store, "attendance_records", side_effect=sqlite3.OperationalError("database is locked")):
             self.app.tick()
+            self.root.update()
         self.assertTrue(self.app.refresh_error)
         self.app.tick()
+        self.root.update()
         self.assertFalse(self.app.refresh_error)
         self.assertEqual(self.app.record_status.get(), "缺勤")
         self.assertEqual(len(self.app.record_rows), 4)
@@ -232,10 +245,15 @@ class FilterGuiTests(FilterFixture):
         original = self.store.session_rows(self.first)[0]
         self.app.correct_record()
         dialog = next(w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel))
-        combo = next(w for w in dialog.winfo_children() if isinstance(w, ttk.Combobox))
-        reason = next(w for w in dialog.winfo_children() if isinstance(w, tk.Text))
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        widgets = list(descendants(dialog))
+        combo = next(w for w in widgets if isinstance(w, ttk.Combobox))
+        reason = next(w for w in widgets if isinstance(w, tk.Text))
         combo.set("请假"); reason.insert("1.0", "按假条更正")
-        save = next(w for w in dialog.winfo_children() if isinstance(w, tk.Button) and w.cget("text") == "保存更正")
+        save = next(w for w in widgets if isinstance(w, tk.Button) and w.cget("text") == "保存更正")
         save.invoke()
         self.assertEqual(self.store.session_rows(self.first)[0], original)
         changed = self.store.session_rows(self.second)[0]
@@ -250,6 +268,12 @@ class FilterGuiTests(FilterFixture):
         output = self.folder / "界面筛选导出.xlsx"
         with patch("admin_app.filedialog.asksaveasfilename", return_value=str(output)):
             self.app.export()
+            deadline = time.monotonic() + 5
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(.005)
+        self.assertFalse(self.app.busy)
+        self.assertTrue(output.is_file())
         book = load_workbook(output)
         self.addCleanup(book.close)
         exported = list(book.active.iter_rows(min_row=5, values_only=True))

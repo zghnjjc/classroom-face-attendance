@@ -94,7 +94,7 @@ def user_message(error):
     if isinstance(error, CameraError):
         return "摄像头无响应或连接中断，请检查设备后重新开始。"
     if isinstance(error, BusyError):
-        return "资源正在使用，请停止另一个窗口的采集、训练或签到后重试。"
+        return str(error) if any("\u4e00" <= char <= "\u9fff" for char in str(error)) else "资源正在使用，请停止另一个窗口的采集、训练或签到后重试。"
     if isinstance(error, ValueError) and any("\u4e00" <= char <= "\u9fff" for char in str(error)):
         return str(error)
     return "操作未完成，请稍后重试；诊断信息已保存到运行日志。"

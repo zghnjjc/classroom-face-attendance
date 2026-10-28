@@ -167,7 +167,7 @@ class LoginFeedbackGuiTests(PasswordCase):
         self.fail_attempts(2)
         login = self.open_login()
         login.password.set(self.password)
-        with patch("admin_app.AdminApp", return_value=Mock()) as management:
+        with patch("admin_app.AdminApp", return_value=Mock(pages={'home': 'home-page'})) as management:
             login.submit()
         management.assert_called_once()
         self.assertTrue(login.login_complete)

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from admin_app import AdminApp
 from attendance_store import AttendanceStore
+from _face_test_support import authorize_faces
 from student_app import StudentApp
 
 
@@ -36,6 +37,7 @@ class RecoveryTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.store = AttendanceStore(Path(self.temporary.name) / "test.db", seed_path=None)
         self.store.save_student("001", "恢复测试学生", "测试班")
+        authorize_faces(self.store)
         self.now = datetime.now().replace(microsecond=0)
         self.sid = self.create_session()
         self.root = tk.Tk()
@@ -178,7 +180,7 @@ class RecoveryTests(unittest.TestCase):
         app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.cancel_timers()
         self.root.update_idletasks()
-        with patch.object(app, "refresh_sessions", side_effect=app.close):
+        with patch.object(app, "refresh_sessions", side_effect=lambda **kwargs: app.close()):
             self.fire(app.tick)
         self.assertFalse(self.errors)
         self.assertFalse(self.root.tk.call("after", "info"))

@@ -10,6 +10,7 @@ class ResourceLease:
         self.path, self.message, self.file = Path(path), message, None
 
     def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("a+b")
         if self.path.stat().st_size == 0:
             self.file.write(b"0")

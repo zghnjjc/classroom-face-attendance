@@ -5,12 +5,15 @@ import threading
 import time
 
 from app_config import CAMERA_LOCK_PATH, DATA_LOCK_PATH, DATASET_DIR, sample_paths, sample_student_id
+from app_config import CAPTURE_TARGET
 from attendance_store import STATUS_TEXT
 from face_utils import cv2, np, load_classifier, load_recognizer, open_camera, save_gray
 from resource_lock import ResourceLease
 from train import model_health, preprocess
-from camera_device import TimedCapture
+from maintenance_tools import require_disk_space
 from app_errors import CameraError, TaskCancelled, log_error, user_message
+from face_lifecycle import FaceLifecycleService, require_authorized
+from face_delete_recovery import assert_no_face_deletion
 
 
 class RecognitionStreak:
@@ -43,7 +46,7 @@ def quality_hint(face):
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, store, mode, student_id=None, session_id=None, target=20):
+    def __init__(self, store, mode, student_id=None, session_id=None, target=CAPTURE_TARGET):
         super().__init__(daemon=True)
         self.store, self.mode = store, mode
         self.student_id, self.session_id, self.target = student_id, session_id, target
@@ -78,6 +81,7 @@ class CameraWorker(threading.Thread):
                     return
                 if self.mode == "capture":
                     with ResourceLease(DATA_LOCK_PATH, "采集或训练正在进行，请稍后重试。"):
+                        assert_no_face_deletion(DATASET_DIR)
                         capture = self._capture_loop()
                 else:
                     capture = self._sign_loop()
@@ -109,7 +113,9 @@ class CameraWorker(threading.Thread):
         student = next((row for row in self.store.students(active_only=True) if row["student_id"] == self.student_id), None)
         if not student:
             raise ValueError("请先保存并启用该学生的信息。")
+        FaceLifecycleService(self.store).require(self.student_id)
         DATASET_DIR.mkdir(exist_ok=True)
+        require_disk_space(DATASET_DIR)
         indices = []
         for file in sample_paths():
             try:
@@ -121,14 +127,14 @@ class CameraWorker(threading.Thread):
         classifier = load_classifier()
         if self.stop_event.is_set():
             return None
-        capture = TimedCapture(open_camera(self.store.camera_index()), self.stop_event)
+        capture = open_camera(self.store.camera_index())
         self.capture = capture
         last_save = 0.0
         try:
             while not self.stop_event.is_set() and self.saved < self.target:
                 ok, frame = capture.read()
                 if not ok or frame is None:
-                    raise RuntimeError("无法读取摄像头图像，请检查连接后重试。")
+                    raise CameraError()
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = classifier.detectMultiScale(gray, 1.2, 5, minSize=(80,80))
                 hint = "请保持画面中只有一人" if len(faces) != 1 else ""
@@ -137,7 +143,11 @@ class CameraWorker(threading.Thread):
                     face = gray[y:y+h, x:x+w]
                     hint = quality_hint(face)
                     if not hint and time.monotonic() - last_save >= .4:
-                        save_gray(DATASET_DIR / f"{self.student_id}.{next_index}.jpg", face)
+                        require_disk_space(DATASET_DIR)
+                        with self.store.connect(write=True) as connection:
+                            connection.execute('BEGIN IMMEDIATE')
+                            require_authorized(connection, self.student_id)
+                            save_gray(DATASET_DIR / f"{self.student_id}.{next_index}.jpg", face)
                         next_index += 1
                         self.saved += 1
                         last_save = time.monotonic()
@@ -153,20 +163,22 @@ class CameraWorker(threading.Thread):
 
     def _sign_loop(self):
         active_ids = {row["student_id"] for row in self.store.students(active_only=True)}
+        lifecycle = FaceLifecycleService(self.store)
+        consented_ids = lifecycle.eligible_ids()
         # 校验与加载期间阻止训练替换模型，保证加载的是同一个已核对版本。
         with ResourceLease(DATA_LOCK_PATH, "采集或训练正在进行，请稍后重新开始识别。"):
-            healthy, message, manifest = model_health(active_ids)
+            healthy, message, manifest = model_health(consented_ids=consented_ids)
             if not healthy:
                 raise ValueError(message)
             matcher = load_recognizer()
         session = self.store.active_session()
         if not session or session["id"] != self.session_id:
             raise ValueError("老师尚未开启本课次签到，或课次已结束。")
-        eligible = {row["student_id"] for row in self.store.session_rows(self.session_id)} & active_ids
+        eligible = {row["student_id"] for row in self.store.session_rows(self.session_id)} & active_ids & consented_ids
         classifier = load_classifier()
         if self.stop_event.is_set():
             return None
-        capture = TimedCapture(open_camera(self.store.camera_index()), self.stop_event)
+        capture = open_camera(self.store.camera_index())
         self.capture = capture
         streak = RecognitionStreak()
         last_check = 0.0
@@ -180,16 +192,17 @@ class CameraWorker(threading.Thread):
                         self.events.put(("session_closed", None))
                         break
                     active_ids = {row["student_id"] for row in self.store.students(active_only=True)}
-                    healthy, message, current_manifest = model_health(active_ids)
+                    consented_ids = lifecycle.eligible_ids()
+                    healthy, message, current_manifest = model_health(consented_ids=consented_ids)
                     if not healthy:
                         raise ValueError(message)
                     if current_manifest.get("model_sha256") != manifest.get("model_sha256"):
                         raise ValueError("识别模型已更新，请重新开始识别。")
-                    eligible = {row["student_id"] for row in self.store.session_rows(self.session_id)} & active_ids
+                    eligible = {row["student_id"] for row in self.store.session_rows(self.session_id)} & active_ids & consented_ids
                     last_check = now
                 ok, frame = capture.read()
                 if not ok or frame is None:
-                    raise RuntimeError("摄像头读取失败，请检查设备后重新开始。")
+                    raise CameraError()
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = classifier.detectMultiScale(gray, 1.2, 5, minSize=(80,80))
                 candidate, hint = None, "请正对摄像头，画面中保持一人"

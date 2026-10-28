@@ -44,6 +44,7 @@ class FlowHost:
         if not inspect.isgenerator(generator):
             return generator
         if not self.async_io:
+            # 仅供同步单元测试使用；生产窗口使用默认异步 FlowRunner。
             value, error = None, None
             self._flow_depth += 1
             try:
@@ -63,6 +64,7 @@ class FlowHost:
             finally:
                 self._flow_depth -= 1
         if key and key in self._flows:
+            generator.close()
             return
         runner = FlowRunner(self, generator, key, on_error)
         self._running_flows.add(runner)
@@ -98,6 +100,7 @@ class FlowRunner:
         self.on_error = on_error
         self.pending = None
         self.closed = False
+        self.interrupted = None
 
     def advance(self, value=None, error=None):
         if self.closed or self.owner.closed:
@@ -140,36 +143,46 @@ class FlowRunner:
         threading.Thread(target=execute, daemon=True).start()
 
         def poll():
-            if self.closed or self.owner.closed:
+            if self.owner.closed:
                 self.cancel()
                 return
             try:
                 ok, result = completed.get_nowait()
             except queue.Empty:
-                try:
-                    control.check()
-                except (TaskCancelled, TaskTimeout) as failure:
-                    control.cancelled.set()
-                    # 保留 pending 标记直到底层调用真实返回，避免取消后立即启动冲突操作。
-                    self.advance(error=failure)
-                    return
-                if control.deadline-time.monotonic() < request.timeout-.4:
+                if not self.closed and self.interrupted is None:
+                    try:
+                        control.check()
+                    except (TaskCancelled, TaskTimeout) as failure:
+                        self.interrupted = failure
+                        control.cancelled.set()
+                        self.owner.say("已请求停止，正在等待当前步骤结束；结束后可重试。")
+                if not self.closed and self.interrupted is None and control.deadline-time.monotonic() < request.timeout-.4:
                     self.owner.say("正在处理数据；数据忙时将自动重试")
                 self.owner.schedule(50, poll)
                 return
             self.pending = None
-            self.advance(result if ok else None, None if ok else result)
+            if self.closed:
+                self.unregister()
+                return
+            interrupted, self.interrupted = self.interrupted, None
+            self.advance(result if ok and interrupted is None else None, interrupted or (None if ok else result))
         self.owner.schedule(20, poll)
 
     def finish(self):
         self.closed = True
-        if self.key:
+        if self.pending is None:
+            self.unregister()
+
+    def unregister(self):
+        if self.key and self.owner._flows.get(self.key) is self:
             self.owner._flows.pop(self.key, None)
         self.owner._running_flows.discard(self)
 
     def cancel(self):
         if self.pending:
             self.pending.cancelled.set()
+        if self.closed:
+            return
         self.finish()
         self.generator.close()
 

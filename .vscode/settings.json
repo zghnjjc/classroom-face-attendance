@@ -2,9 +2,30 @@
     "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
     "python.terminal.activateEnvironment": true,
     "python.analysis.typeCheckingMode": "basic",
-    "python.analysis.exclude": ["**/backups/**", "**/.venv/**"],
+    "python.analysis.exclude": [
+        "**/backups/**",
+        "**/.venv/**",
+        "**/.test-data/**",
+        "**/build/**",
+        "**/dist/**"
+    ],
     "files.encoding": "utf8",
     "files.exclude": {
-        "**/__pycache__": true
+        "**/__pycache__": true,
+        "**/.venv": true,
+        "**/.test-data": true,
+        "**/backups": true,
+        "**/dataset": true,
+        "**/logs": true
+    },
+    "search.exclude": {
+        "**/.venv/**": true,
+        "**/.test-data/**": true,
+        "**/backups/**": true,
+        "**/dataset/**": true,
+        "**/logs/**": true,
+        "**/build/**": true,
+        "**/dist/**": true,
+        "**/.build-tools/**": true
     }
 }

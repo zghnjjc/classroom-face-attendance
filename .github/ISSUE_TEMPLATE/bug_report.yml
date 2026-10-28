@@ -20,8 +20,8 @@ body:
     id: version
     attributes:
       label: 项目版本
-      description: 例如 v0.1.0，或注明提交哈希
-      placeholder: v0.1.0
+      description: 例如 v0.2.0，或注明提交哈希
+      placeholder: v0.2.0
     validations:
       required: true
   - type: dropdown

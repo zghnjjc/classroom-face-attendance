@@ -1,7 +1,5 @@
 """经过口令复核的样本删除。保留考勤时间证据，不保存生物图像副本。"""
 
-import shutil
-import tempfile
 from pathlib import Path
 
 from app_config import CAMERA_LOCK_PATH, DATA_LOCK_PATH, DATASET_DIR, MODEL_PATH, sample_paths, sample_student_id
@@ -9,6 +7,9 @@ from app_errors import ValidationError
 from resource_lock import ResourceLease
 from task_runtime import checkpoint
 from train import manifest_path, train_model, training_paths
+from face_lifecycle import FaceLifecycleService
+from face_delete_recovery import (COMMIT_KEY, prepare_deletion, record_outputs, install_outputs,
+                                  recover_deletion, recover_face_deletions)
 
 
 def delete_face_data(store, password, student_id=None, *, clear_all=False, dataset=DATASET_DIR,
@@ -18,6 +19,10 @@ def delete_face_data(store, password, student_id=None, *, clear_all=False, datas
         raise ValidationError("请先选择学生。")
     if not store.authenticate(password):
         raise ValidationError("管理密码不正确。")
+    recover_face_deletions(store)
+    lifecycle = FaceLifecycleService(store)
+    if lifecycle.snapshot()['pending_job']:
+        raise ValidationError('请先在人脸授权页续办未完成的人脸资料清理。')
     dataset, model = Path(dataset).resolve(), Path(model).resolve()
     dataset.mkdir(parents=True, exist_ok=True)
     with ResourceLease(camera_lock), ResourceLease(data_lock):
@@ -29,13 +34,8 @@ def delete_face_data(store, password, student_id=None, *, clear_all=False, datas
                 matches = False
             if clear_all or matches:
                 paths.append(path)
-        old_model = model.read_bytes() if model.exists() else None
         info_path = manifest_path(model)
-        old_manifest = info_path.read_bytes() if info_path.exists() else None
-        # 仅在当前样本目录下创建已验证的临时位置，结束时不留下被删除样本副本。
-        staging=Path(tempfile.mkdtemp(prefix=".face-delete-",dir=dataset)).resolve()
-        if staging.parent != dataset:
-            raise RuntimeError("无效临时目录")
+        staging, plan = prepare_deletion(store, dataset, model, info_path, paths)
         moved=[]
         try:
             for path in paths:
@@ -43,27 +43,25 @@ def delete_face_data(store, password, student_id=None, *, clear_all=False, datas
                 destination=staging/path.name
                 path.replace(destination)
                 moved.append((path,destination))
-            active={row["student_id"] for row in store.students(active_only=True)}
+            active={row["student_id"] for row in store.students(active_only=True)} & lifecycle.eligible_ids()
             if student_id: active.discard(student_id)
             checkpoint()
+            next_model = staging/'next-model.yml'
+            next_manifest = manifest_path(next_model)
             if not clear_all and training_paths(dataset,active):
-                train_model(dataset,model,active,_lease=False)
-            else:
-                model.unlink(missing_ok=True)
-                info_path.unlink(missing_ok=True)
+                train_model(dataset,next_model,active,_lease=False,store=store)
+            record_outputs(staging, plan, next_model, next_manifest)
+            checkpoint()
+            install_outputs(store.path.parent.resolve(), staging, plan)
             with store.connect(write=True) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 store._audit(connection,"清空全部训练数据" if clear_all else "删除人脸样本并重建模型",
-                             student_id=student_id,detail=f"移除 {len(moved)} 张样本；保留考勤时间证据")
+                             student_id=student_id,detail=f"移除 {len(moved)} 张样本；保留考勤时间证据",
+                             after={'deletion_id': plan['id']})
+                store._set(connection, COMMIT_KEY, plan['id'])
             # 后续删除是已提交事务的清理，不因取消留下包含生物图像的临时目录。
         except BaseException:
-            for path, destination in moved:
-                destination.replace(path)
-            if old_model is None: model.unlink(missing_ok=True)
-            else: model.write_bytes(old_model)
-            if old_manifest is None: info_path.unlink(missing_ok=True)
-            else: info_path.write_bytes(old_manifest)
+            recover_deletion(store, staging)
             raise
-        finally:
-            shutil.rmtree(staging)
+        recover_deletion(store, staging)
         return len(moved)

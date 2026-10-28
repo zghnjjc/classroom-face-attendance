@@ -22,6 +22,8 @@ from admin_app import AdminApp, AdminLogin
 from app_errors import CameraError, TaskTimeout, configure_logging, log_error, user_message
 from app_startup import StartupController
 from attendance_store import AttendanceStore
+from _face_test_support import authorize_faces
+from _flow_test_support import pump_flows
 from camera_device import ProcessCapture, TimedCapture
 from camera_service import CameraWorker
 from face_privacy import delete_face_data
@@ -69,6 +71,7 @@ class TemporaryCase(unittest.TestCase):
             self.store.save_student(sid,"临时学生"+sid,"测试班")
             image=np.random.default_rng(int(sid)).integers(40,210,(160,160),dtype=np.uint8)
             save_gray(self.dataset/f"{sid}.0.jpg",image)
+        authorize_faces(self.store)
         with patch("train.DATA_LOCK_PATH",self.folder/"samples.lock"):
             train_model(self.dataset,self.model,{"001","002"})
 
@@ -82,7 +85,7 @@ class A1ModelTests(TemporaryCase):
     def test_disabling_trained_identity_does_not_invalidate_model(self):
         self.seed()
         self.store.set_student_active("002",False)
-        self.assertTrue(model_health({"001"},self.model,self.dataset)[0])
+        self.assertTrue(model_health(self.model,self.dataset)[0])
         sid=self.open_session()
         self.assertTrue(self.store.record_sign_in("001",sid,self.now)["inserted"])
         with self.assertRaises(ValueError):
@@ -95,18 +98,18 @@ class A1ModelTests(TemporaryCase):
     def test_untrained_enabled_student_does_not_block_trained_students(self):
         self.seed()
         self.store.save_student("003","未训练","测试班")
-        healthy,_,manifest=model_health({"001","002","003"},self.model,self.dataset)
+        healthy,_,manifest=model_health(self.model,self.dataset)
         self.assertTrue(healthy)
         self.assertNotIn("003",manifest["student_ids"])
         self.store.set_student_active("003",False)
         self.store.set_student_active("003",True)
-        self.assertTrue(model_health({"001","002","003"},self.model,self.dataset)[0])
+        self.assertTrue(model_health(self.model,self.dataset)[0])
 
     def test_disabled_samples_and_trained_sample_changes_are_distinct(self):
         self.seed()
-        self.assertTrue(model_health(set(),self.model,self.dataset)[0])
+        self.assertTrue(model_health(self.model,self.dataset)[0])
         (self.dataset/"001.0.jpg").write_bytes(b"changed")
-        self.assertFalse(model_health({"002"},self.model,self.dataset)[0])
+        self.assertFalse(model_health(self.model,self.dataset)[0])
 
 
 class A4CameraTests(unittest.TestCase):
@@ -240,7 +243,7 @@ class A6FaceDeletionTests(TemporaryCase):
         self.store.close_session(sid)
         self.assertEqual(self.delete(student_id="001"),1)
         self.assertFalse((self.dataset/"001.0.jpg").exists())
-        health=model_health({"001","002"},self.model,self.dataset)
+        health=model_health(self.model,self.dataset)
         self.assertTrue(health[0])
         self.assertEqual(health[2]["student_ids"],["002"])
         self.assertEqual(self.store.attendance_history(sid,"001")["evidence"]["signed_at"],record["signed_at"])
@@ -254,7 +257,7 @@ class A6FaceDeletionTests(TemporaryCase):
         self.assertFalse(manifest_path(self.model).exists())
         self.assertEqual(list(self.dataset.glob("*.jpg")),[])
         self.assertEqual(len(self.store.students()),2)
-        self.assertFalse(model_health(None,self.model,self.dataset)[0])
+        self.assertFalse(model_health(self.model,self.dataset)[0])
 
     def test_wrong_password_does_not_delete_and_rebuild_failure_rolls_back(self):
         self.seed(); self.store.setup_admin("test-password-2026")
@@ -298,10 +301,7 @@ class AsyncGuiTests(TemporaryCase):
         gc.collect()
 
     def wait(self,predicate,timeout=5):
-        end=time.perf_counter()+timeout
-        while time.perf_counter()<end and not predicate():
-            self.root.update(); threading.Event().wait(.01)
-        self.assertTrue(predicate(),"异步操作没有在截止时间内完成")
+        pump_flows(self, self.root, predicate=predicate, timeout=timeout)
 
     def admin(self):
         with patch("admin_app.model_health",return_value=(False,"请先训练",None)):
@@ -327,8 +327,9 @@ class AsyncGuiTests(TemporaryCase):
         failing=worker();app.toggle_camera()
         failing.events.put(("error","摄像头连接中断"));failing.events.put(("stopped",0))
         app.poll_camera()
-        self.assertEqual(app.hint.get(),"摄像头连接中断")
-        self.assertIn("按提示处理",app.status.get())
+        self.assertIn("摄像头连接中断",app.hint.get())
+        self.assertIn("人工点名",app.hint.get())
+        self.assertIn("人工登记",app.status.get())
 
     def test_default_async_admin_and_student_stay_responsive_under_db_lock(self):
         app=self.admin()
@@ -373,9 +374,10 @@ class AsyncGuiTests(TemporaryCase):
     def test_three_entrypoints_use_common_startup_guard(self):
         import GUI,admin_app,student_app
         factories=[]
-        with patch("app_startup.launch_entry",side_effect=factories.append):
+        with patch("app_startup.launch_entry",side_effect=lambda factory, **kwargs: factories.append((factory, kwargs.get('role','launcher')))):
             for module in (GUI,admin_app,student_app): module.main()
         self.assertEqual(len(factories),3)
+        self.assertEqual([role for factory, role in factories],['launcher','admin','student'])
 
     def test_startup_io_permission_error_is_chinese_and_retryable(self):
         ready=[]
@@ -383,6 +385,8 @@ class AsyncGuiTests(TemporaryCase):
         boot=StartupController(self.root,lambda root,store:ready.append(store),store_factory=factory)
         self.wait(lambda:boot.retry.cget("state")=="normal")
         self.assertIn("权限",boot.message.get())
+        self.assertIn("当前数据目录",boot.message.get())
+        self.assertNotIn("损坏",boot.message.get())
         self.assertNotIn("private",boot.message.get())
         boot.probe(); self.wait(lambda:bool(ready))
 
@@ -440,7 +444,7 @@ class AsyncGuiTests(TemporaryCase):
         output=self.folder/"export.xlsx"
         with patch("admin_app.filedialog.asksaveasfilename",return_value=str(output)),patch.object(self.store,"export_attendance",side_effect=export):
             app.export()
-            self.wait(lambda:output.exists() and not app._running_flows)
+            pump_flows(self, self.root, app, predicate=output.exists)
         self.assertNotEqual(called[0],threading.get_ident())
         self.assertTrue(output.exists())
 

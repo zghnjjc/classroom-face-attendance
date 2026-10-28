@@ -3,7 +3,7 @@
 ## 1. 当前状态
 
 - 测试框架：Python 标准库 `unittest`（未使用 pytest）。
-- 测试规模：**136 项**，分布在 `tests/` 下 9 个文件中。
+- 测试规模：**502 项**，分布在 `tests/` 下 24 个文件中。
 - 运行环境：Windows 10/11 + Python 3.11（开发环境在 3.11.9 验证）。
 - 测试特性：使用临时数据库、合成图片与模拟相机；不需要真实人脸、真实摄像头或生产数据库。
 
@@ -14,6 +14,7 @@
 在**仓库根目录**执行：
 
 ```powershell
+$env:CLASSROOM_DATA_DIR = Join-Path $env:TEMP ('classroom-tests-' + [guid]::NewGuid().ToString('N'))
 py -3.11 -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements-lock.txt
 ./.venv/Scripts/python.exe -m pip check
@@ -30,7 +31,7 @@ py -3.11 -m venv .venv
 注意：
 
 - **必须在仓库根目录运行**：测试按项目根目录导入模块；在 `tests/` 子目录或仓库外运行可能出现 `ModuleNotFoundError`。
-- 需要真实**桌面图形会话**：8 个测试文件会创建真实 Tk 根窗口；无头环境需 Windows runner 或 Linux + Xvfb。
+- 需要真实**桌面图形会话**：多组用例会创建真实 Tk 根窗口；无头环境需 Windows runner 或 Linux + Xvfb。
 - 测试会写入临时目录，**不应**使用正式 `attendance.db`；如担心污染，先在干净副本中运行。
 - Windows 终端中文输出建议设置 `PYTHONUTF8=1`（CI 已设置）。
 
@@ -60,12 +61,34 @@ py -3.11 -m venv .venv
 | `tests/test_login_feedback.py` | 8 | 剩余尝试次数与第五次锁定、锁定到期保留失败计数且下次锁定更长、只读状态取整且不重置、错误密码更新页面、倒计时禁用按钮/回车并在到期恢复、重开锁定页面显示倒计时且不消耗尝试、成功登录清零并取消定时器、异步过期状态不覆盖新失败且 Tk 保持响应 |
 | `tests/test_recovery.py` | 8 | 故障后管理端定时刷新发现新课次、学生端定时刷新、已保存结果重试显示与停止事件消费、课次切换后丢弃过期结果、课次行查询失败不提交半更新、相机启动查询错误保持按钮禁用、数据库失败仍处理提示与停止、关闭窗口后不再调度 |
 | `tests/test_empty_project.py` | 3 | 空种子不会恢复已删除示例数据、空管理端页面可切换、空学生端等待且不启动相机 |
+| `tests/test_ui_experience.py` | 13 | 桌面工作区尺寸限制、短屏最小尺寸、短维护页首次映射、侧栏滚动与 Tab 定位、设置末尾可达与滚轮绑定清理、表格末列可达、人工更正保存按钮固定、学生端侧栏、入口按钮可见、相机预览等比缩放、任务取消等待/超时归因/完成恢复及完整提示 |
+| `tests/test_deployment.py` | 33 | 源码/冻结入口、目录偏好与覆盖、防静默空库、内容签名与缓存、备份清单、跨目录模型恢复、恢复前快照及 ZIP、篡改/路径穿越/设备名/重复成员/版本拒绝、旧备份与旧模型兼容、跨进程互斥、替换失败与中断回退、已提交日志、迁移、口令锁定、离线授权、重置互斥及恢复界面状态 |
+| `tests/test_manual_attendance.py` | 25 | 无模型人工开课与原有时段/唯一课次规则、原因与审计原子性、批量时间处理、快照/备注/证据保留、非法输入、预览并发复核、整批失败与取消回滚、重复提交、Tk 多选筛选/预览失效/小屏固定按钮/后台响应及故障兜底 |
+| `tests/test_course_schedule.py` | 26 | 16 周/隔周/跨日/闰日日期、非法输入、全机时段冲突与相邻边界、停课跳过、固定/班级名单与历史快照、并发预览、整批失败与取消回滚、重复生成、模板修订/同名/损坏/备份恢复、小屏及后台响应 |
+| `tests/test_teacher_dashboard.py` | 26 | 今日/跨日/过期统计、未签到快照、队列上限、核对范围/幂等/并发/回滚/变更失效、损坏标记、备份成功状态与恢复、默认首页、历史课次精确导航、失败恢复、小屏和后台响应 |
 
-合计：136 项。
+| `tests/test_automatic_backup.py` | 27 | 默认关闭、时间边界/补做/重启去重、强制重试、迁移暂停、真实备份恢复、资源锁/跨窗口并发、失败退避、哈希保留/未知文件/缺失/占用/损坏索引/路径穿越、取消与超时、首页反馈及小屏/后台响应 |
+
+| `tests/test_attendance_reports.py` | 26 | 已结束与进行中/到时边界、迟到/请假/零应到/加权比率、跨日及末日归属、同日多课次、历史快照/停用/移出增补/更正证据、课程班级筛选、SQLite 一致读取、五表 Excel/文本学号/公式防护/矩阵非成员、取消与失败保留文件、Tk 筛选失效/重试/小屏与后台响应 |
+
+| `tests/test_first_use.py` | 30 | 新用户/旧用户路由、密码验证与续办、显式跳过、损坏/迁移进度、名单预览/停用/并发/回滚/取消、内存预览/占用/失败/释放、数据位置持久化、小屏、后台导入与等待退出、设置中主动重开与完成跳转 |
+
+| `tests/test_session_times.py` | 29 | 四时间/秒级边界/课前人工与唯一开放、零迟到与关闭阈值/24 小时、正式日期归属、审计与三类导出、schema 3 原值/证据/密码/模板/核对保留、事务迁移回滚、旧备份与新四时间恢复、坏结构/坏时间拒绝、周期跨日/前日/冲突及旧模板换算、Tk 表单/预览/学生端/小屏与导航 |
+
+| `tests/test_maintenance_tools.py` | 35 | 独立/持久化时限、损坏配置拒绝、磁盘阈值/不存在目标、备份空间估算、采集/训练/Excel/备份低空间保护、诊断白名单及隐私/限量读取/失败取消保护、设备释放前锁定、独立检测/重试/保存编号/小屏、采集中断补采、学生端重试复核课次、后台空间检查响应、超时恢复 |
+
+| `tests/test_face_lifecycle.py` | 41 | 无推定同意、版本不可覆盖、授权/凭据/期限/确认、过期与回填防绕过、14 日提醒、撤回与原始证据、采集/训练/模型门禁、schema 4 升级与旧备份、新授权历史恢复、恢复前撤回不复活、清理口令/锁/预览变化/取消/失败续办/路径与哈希/长文件名/审计回滚、Tk 页面/弹窗/后台提交/小屏与响应、短告知表单首次可见与可编辑 |
+
+| `tests/test_review_refinements.py` | 11 | 审计展示改名与核对去重、公共导出字段、备份资源目录及锁、真实异步保存与更正、采集目标续采、可见页面轮询、取消/超时迟到结果及流程键去重 |
+| `tests/test_startup_paths.py` | 7 | 用户目录拒绝访问时保存程序目录配置、原配置更新与优先级、环境覆盖、替换失败回退、两位置不可写时失败、坏配置不静默换库、原数据检测先于默认目录写入 |
+| `tests/test_freeze_fixes.py` | 18 | 授权/告知表单内失败反馈与重试、取消及读取设置时取消、消息框模态父窗口与后续轮询、超时/取消后线程占位、只读版本拒绝、删除移样本/换模型/提交后强制退出恢复、审计回滚、未知旧暂存与变化文件保护、未恢复时停止训练及备份 |
+| `tests/test_login_edges.py` | 19 | 复核后关闭保留完成状态、旧用户复核不创建进度、确认/取消显式重置、只读准备及写事务竞态复核、占写锁时显示登录页、传递已知进度、登录/向导/启动/设置弹窗构造失败后恢复重试、首次密码持久化、完成幂等、定时器令牌及时移除 |
+
+合计：502 项。`tests/_face_test_support.py` 为合成刷脸用例登记测试告知与授权，`tests/_flow_test_support.py` 推进真实异步事件循环；辅助文件不计入测试文件数，不修改生产门禁。
 
 ## 5. GUI / 桌面依赖
 
-- `tests/test_gui.py`、`test_login_feedback.py`、`test_recovery.py`、`test_regressions.py`、`test_empty_project.py`、`test_business_rules.py`、`test_A_fixes.py`、`test_attendance_filters.py` 会创建真实 `tk.Tk()` 根窗口。
+- `tests/test_gui.py`、`test_login_feedback.py`、`test_recovery.py`、`test_regressions.py`、`test_empty_project.py`、`test_business_rules.py`、`test_A_fixes.py`、`test_attendance_filters.py`、`test_ui_experience.py`、`test_deployment.py`、`test_manual_attendance.py`、`test_course_schedule.py`、`test_teacher_dashboard.py` 会创建真实 `tk.Tk()` 根窗口。
 - 无 `DISPLAY`（Linux 无头）会直接 `TclError`；Windows 服务/无交互会话也可能失败。
 - Windows 托管 runner 上 Tk 环境偶发异常时，可用“Tk smoke test”先定位环境问题；偶发失败可重跑。
 - 本仓库没有为 GUI 用例增加 `skipUnless` 环境开关；如未来需要在无头环境跳过 GUI 用例，可新增显式开关，但当前 CI 目标是有桌面的 Windows runner。

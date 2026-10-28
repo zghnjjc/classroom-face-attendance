@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 
 from admin_app import AdminApp
 from attendance_store import AttendanceStore
+from _face_test_support import authorize_faces
 
 
 class BusinessFixture(unittest.TestCase):
@@ -27,6 +28,7 @@ class BusinessFixture(unittest.TestCase):
         for sid, name in (("001", "甲"), ("002", "乙")):
             self.store.save_student(sid, name, "一班")
         self.start = self.now-timedelta(minutes=10)
+        authorize_faces(self.store)
         self.end = self.now+timedelta(hours=1)
 
     def session(self, opened=False, **kwargs):
@@ -229,6 +231,7 @@ class RosterAdjustmentTests(BusinessFixture):
         sid = self.session(opened=True)
         self.store.record_sign_in("001", sid, self.now)
         self.store.save_student("003", "丙", "二班")
+        authorize_faces(self.store)
         plan = self.change_roster(sid, add_ids=["003"], remove_ids=["001"])
         self.assertEqual(plan["recorded_removals"], ["001"])
         with self.assertRaises(ValueError):
@@ -381,19 +384,22 @@ class BusinessGuiTests(BusinessFixture):
 
     def test_gui_unknown_time_requires_explicit_choice(self):
         sid = self.session(opened=True)
+        # 精确使用课次日期，包含零点前创建、零点后仍在进行的课次。
+        self.app.record_period.set('选定课次日期')
+        self.app.record_target = self.store.session(sid)
         self.select(sid)
-        self.app.records_tree.selection_set(f"{sid}:001")
+        self.app.records_tree.selection_set('001')
         self.app.correct_record()
         dialog = self.dialog()
-        next(w for w in dialog.winfo_children() if isinstance(w, tk.Text)).insert("1.0", "现场核实")
-        save = next(w for w in dialog.winfo_children() if isinstance(w, tk.Button) and w.cget("text") == "保存更正")
+        next(w for w in self.descendants(dialog) if isinstance(w, tk.Text)).insert("1.0", "现场核实")
+        save = next(w for w in self.descendants(dialog) if isinstance(w, tk.Button) and w.cget("text") == "保存更正")
         with patch("admin_app.messagebox.showerror") as error:
             save.invoke()
             self.assertTrue(error.called)
         next(w for w in self.descendants(dialog) if isinstance(w, ttk.Checkbutton)).invoke()
         save.invoke()
         self.assertEqual((self.rows(sid)["001"]["status"], self.rows(sid)["001"]["signed_at"]), ("present", None))
-        self.assertIn("时间未确认", self.app.records_tree.item(f"{sid}:001", "values"))
+        self.assertIn("时间未确认", self.app.records_tree.item('001', "values"))
         self.app.show_selected_history()
         history = next(w for w in self.descendants(self.dialog()) if isinstance(w, tk.Text)).get("1.0", "end")
         self.assertIn("管理入口（未署名）", history)

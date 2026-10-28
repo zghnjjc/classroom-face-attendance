@@ -1,3 +1,11 @@
 {
-    "recommendations": ["ms-python.python", "ms-python.debugpy"]
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "github.vscode-pull-request-github",
+        "github.vscode-github-actions",
+        "eamodio.gitlens",
+        "editorconfig.editorconfig",
+        "redhat.vscode-yaml"
+    ]
 }

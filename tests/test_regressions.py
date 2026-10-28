@@ -16,6 +16,7 @@ from openpyxl import Workbook, load_workbook
 
 from admin_app import AdminApp, CaptureDialog
 from attendance_store import AttendanceStore, read_student_import
+from _face_test_support import authorize_faces
 from camera_service import CameraWorker
 from GUI import Launcher
 from face_utils import save_gray
@@ -50,6 +51,7 @@ class TemporaryStoreTest(unittest.TestCase):
         self.store = AttendanceStore(self.folder / "test.db", seed_path=None)
         self.store.save_student("001", "测试甲", "一班")
         self.store.save_student("002", "测试乙", "一班")
+        authorize_faces(self.store)
         self.now = datetime.now().replace(microsecond=0)
 
     def session(self, course="测试课", start=None, end=None, grace=10):
@@ -336,7 +338,7 @@ class ModelRegressionTests(unittest.TestCase):
             for content in ["[]", "null", "42", json.dumps({"version": 2})]:
                 with self.subTest(content=content):
                     manifest_path(model).write_text(content, encoding="utf-8")
-                    self.assertFalse(model_health(set(), model, folder)[0])
+                    self.assertFalse(model_health(model, folder)[0])
 
     def test_missing_identity_list_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -347,7 +349,7 @@ class ModelRegressionTests(unittest.TestCase):
             manifest = train_model(folder, model, {"001"})
             del manifest["student_ids"]
             manifest_path(model).write_text(json.dumps(manifest), encoding="utf-8")
-            self.assertFalse(model_health({"001"}, model, folder)[0])
+            self.assertFalse(model_health(model, folder)[0])
 
 
 class CameraRegressionTests(TemporaryStoreTest):
@@ -370,7 +372,7 @@ class CameraRegressionTests(TemporaryStoreTest):
                         self.store.close_session(sid)
                     return result
                 calls = []
-                def health(_ids):
+                def health(**kwargs):
                     calls.append(True)
                     if worker.events.qsize() and any(event[0] == "signed" for event in worker.events.queue):
                         if transition == "samples":

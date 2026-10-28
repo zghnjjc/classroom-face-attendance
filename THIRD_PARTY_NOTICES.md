@@ -74,6 +74,8 @@
 
 ## 3. 由用户运行环境提供的组件（不随仓库分发）
 
+本节指源码运行。Windows 解压发行包还会随附嵌入式 Python、Tcl/Tk、SQLite、运行依赖及 PyInstaller 引导程序。构建配置会复制运行依赖与 PyInstaller 的包元数据许可目录，以及 Python/Tcl/Tk 许可文本，保存在 `_internal/` 下的相应 `*.dist-info/` 与 `licenses/` 中；OpenCV 包内的许可文件同时保留。请随整个目录一并分发。
+
 | 组件 | 说明 |
 | --- | --- |
 | Python 3.11 | 由用户安装（python.org 发行版的许可为 PSF-2.0 等） |

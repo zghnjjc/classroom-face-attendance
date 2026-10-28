@@ -12,49 +12,92 @@ from functools import partial
 from task_runtime import IO, ui_flow, FlowHost
 from app_errors import log_error, user_message
 from face_privacy import delete_face_data
-from app_config import BASE_DIR, DATA_LOCK_PATH, sample_paths, sample_student_id
+from app_config import BASE_DIR, DATA_DIR, BACKUP_TIMEOUT, sample_paths, sample_student_id
 from attendance_store import AttendanceStore, STATUS_TEXT, read_student_import
+from attendance_fields import ARRIVED_STATUSES, is_time_unknown, arrival_time_note, method_text
+from audit_actions import CORRECT_ATTENDANCE, SESSION_ACTIONS, action_text
+from app_config import CAPTURE_TARGET
 from attendance_filters import PERIODS, record_date_range
 from camera_service import CameraWorker
+from manual_attendance import ManualAttendanceDialog
+from course_schedule_ui import CourseScheduleDialog
+from dashboard_ui import TeacherDashboard, SessionReviewDialog
+from automatic_backup_ui import AutomaticBackupPanel
+from attendance_reports_ui import AttendanceReportsPanel
+from first_use import FirstUseService
+from first_use_ui import FirstUseWizard
+from session_times import session_time_text
+from maintenance_tools import MaintenanceService
+from maintenance_ui import MaintenancePanel
+from face_lifecycle import FaceLifecycleService
+from face_lifecycle_ui import FaceLifecyclePanel
 from GUI import launch_script
-from resource_lock import ResourceLease
 from train import model_health, train_model
-from ui_common import BG, BLUE, GREEN, INK, MUTED, WHITE, BaseWindow, CameraView, button, entry_field, label, panel, replace_rows, setup_theme, tree
+from ui_common import BG, BLUE, GREEN, INK, MUTED, WHITE, BaseWindow, CameraView, ScrollableFrame, button, entry_field, fit_window, label, panel, replace_rows, setup_theme, switch_view, tree
 STATE_TEXT = {'draft': '待开启', 'open': '签到中', 'closed': '已结束', 'cancelled': '已取消'}
 
 class CaptureDialog:
 
-    def __init__(self, parent, store, student, on_done):
+    def __init__(self, parent, store, student, on_done, *, target=CAPTURE_TARGET):
+        self.target = target
         self.window = tk.Toplevel(parent)
         self.window.title('采集人脸 · ' + student['name'])
-        self.window.geometry('760x740')
-        self.window.minsize(720, 680)
+        fit_window(self.window, '760x740', minimum=(620, 500))
         self.window.configure(bg=WHITE)
         self.window.transient(parent)
         self.window.grab_set()
         self.window.protocol('WM_DELETE_WINDOW', self.stop)
         self.on_done = on_done
         self.closing = False
+        self.store, self.student = store, student
+        self.saved, self.failed = 0, False
         label(self.window, f"为 {student['name']} 采集人脸", size=18, bold=True).pack(anchor='w', padx=24, pady=(22, 5))
-        label(self.window, f"学号 {student['student_id']} · 自动采集 20 张，请缓慢转头、改变表情", size=9, color=MUTED).pack(anchor='w', padx=24, pady=(0, 15))
+        label(self.window, f"学号 {student['student_id']} · 自动采集 {self.target} 张，请缓慢转头、改变表情", size=9, color=MUTED).pack(anchor='w', padx=24, pady=(0, 15))
+        footer = tk.Frame(self.window, bg=WHITE)
+        footer.pack(side='bottom', fill='x', padx=24, pady=(0,12))
+        self.hint = tk.StringVar(value='正在连接摄像头…')
+        label(footer, textvariable=self.hint, color=MUTED, wraplength=560, justify='left').pack(anchor='w', pady=12)
+        self.progress = ttk.Progressbar(footer, maximum=self.target)
+        self.progress.pack(fill='x')
+        self.stop_button = button(footer, '结束采集', self.stop)
+        self.stop_button.pack(anchor='e', pady=(12,0))
+        self.retry_button = button(footer, '设备恢复后重试', self.retry)
+        self.retry_button.pack(anchor='e', pady=(6, 0))
+        self.retry_button.configure(state='disabled')
         self.view = CameraView(self.window)
         self.view.pack(fill='both', expand=True, padx=24)
-        self.hint = tk.StringVar(value='正在连接摄像头…')
-        label(self.window, textvariable=self.hint, color=MUTED, wraplength=700).pack(anchor='w', padx=24, pady=14)
-        self.progress = ttk.Progressbar(self.window, maximum=20)
-        self.progress.pack(fill='x', padx=24)
-        self.stop_button = button(self.window, '结束采集', self.stop)
-        self.stop_button.pack(anchor='e', padx=24, pady=18)
-        self.worker = CameraWorker(store, 'capture', student_id=student['student_id'])
+        self.worker = CameraWorker(store, 'capture', student_id=student['student_id'], target=self.target)
         self.worker.start()
         self.window.after(50, self.poll)
 
     def stop(self):
         self.closing = True
-        self.worker.stop()
+        self.retry_button.configure(state='disabled')
+        if self.worker:
+            self.worker.stop()
+        else:
+            self.finish()
+            return
         self.stop_button.configure(state='disabled', text='正在结束…')
 
+    def finish(self):
+        self.window.grab_release()
+        self.window.destroy()
+        self.on_done(self.saved)
+
+    def retry(self):
+        if self.worker or self.closing:
+            return
+        self.failed = False
+        self.worker = CameraWorker(self.store, 'capture', student_id=self.student['student_id'], target=self.target-self.saved)
+        self.retry_button.configure(state='disabled')
+        self.hint.set('正在重新连接；已保存样本保留，只补采剩余张数。')
+        self.worker.start()
+        self.window.after(50, self.poll)
+
     def poll(self):
+        if not self.worker or not self.window.winfo_exists():
+            return
         self.view.render(self.worker.take_frame())
         try:
             while True:
@@ -62,13 +105,18 @@ class CaptureDialog:
                 if kind == 'hint':
                     self.hint.set(value)
                 elif kind == 'progress':
-                    self.progress['value'] = value[0]
+                    self.progress['value'] = self.saved + value[0]
                 elif kind == 'error':
-                    messagebox.showerror('采集未完成', value, parent=self.window)
+                    self.failed = True
+                    self.hint.set(value + '；正在释放设备，请稍候再重试。')
                 elif kind == 'stopped':
-                    self.window.grab_release()
-                    self.window.destroy()
-                    self.on_done(value)
+                    self.saved += value
+                    self.worker = None
+                    if self.failed and not self.closing and self.saved < self.target:
+                        self.hint.set('设备已释放；检查连接和权限后重试。已保存样本保留，也可结束后人工点名。')
+                        self.retry_button.configure(state='normal')
+                    else:
+                        self.finish()
                     return
         except queue.Empty:
             pass
@@ -85,23 +133,44 @@ class AdminApp(BaseWindow):
         self.students_data = []
         self.selected_student = None
         self.capture_dialog = None
+        self.manual_dialog = None
+        self.schedule_dialog = None
+        self.review_dialog = None
+        self.setup_dialog = None
+        self.record_target = None
+        self.face_summary = None
         self.refresh_error = False
         super().__init__(root, '教师管理', '学生档案、课次安排与考勤记录', geometry='1180x860',async_io=async_io)
-        self.root.minsize(1080, 840)
+        fit_window(self.root, '1180x860', minimum=(940, 600))
         self.notebook = ttk.Notebook(self.content)
         self.notebook.pack(fill='both', expand=True)
         self.pages = {}
-        for key, title in [('students', '学生与人脸'), ('sessions', '课次管理'), ('records', '考勤记录'), ('settings', '数据与设置')]:
-            frame = tk.Frame(self.notebook, bg=WHITE, padx=20, pady=18)
+        self.privacy_hint = tk.StringVar()
+        for key, title in [('home', '今日课堂'), ('students', '学生与人脸'), ('sessions', '课次管理'), ('records', '考勤记录'), ('reports', '统计报表'), ('privacy', '人脸授权'), ('maintenance', '现场维护'), ('settings', '数据与设置')]:
+            frame = tk.Frame(self.notebook, bg=WHITE, padx=16, pady=12)
             self.notebook.add(frame, text=title)
             self.pages[key] = frame
         self.build_students()
         self.build_sessions()
         self.build_records()
+        self.reports = AttendanceReportsPanel(self, self.pages['reports'])
+        self.reports.pack(fill='both', expand=True)
+        self.notebook.bind('<<NotebookTabChanged>>', self.reports.on_selected, add='+')
+        self.notebook.bind('<<NotebookTabChanged>>', self.records_selected, add='+')
+        self.maintenance = MaintenancePanel(self, self.pages['maintenance'])
+        self.maintenance.pack(fill='both', expand=True)
+        self.lifecycle = FaceLifecyclePanel(self, self.pages['privacy'])
+        self.lifecycle.pack(fill='both', expand=True)
         self.build_settings()
+        privacy_banner = label(self.pages['home'], textvariable=self.privacy_hint, size=9, color=MUTED, cursor='hand2')
+        privacy_banner.pack(fill='x', pady=(0, 8))
+        privacy_banner.bind('<Button-1>', lambda event: self.notebook.select(self.pages['privacy']))
+        self.dashboard = TeacherDashboard(self, self.pages['home'])
+        self.dashboard.pack(fill='both', expand=True)
         self.refresh_students()
         self.refresh_sessions()
         self.load_camera_setting()
+        self.load_storage_info()
         self.schedule(3000, self.tick)
 
     def guarded(self, work):
@@ -126,11 +195,12 @@ class AdminApp(BaseWindow):
         label(toolbar, '班级学生名单', size=13, bold=True).pack(side='left')
         button(toolbar, '导入名单', self.import_roster).pack(side='right')
         button(toolbar, '下载模板', self.roster_template, plain=True).pack(side='right', padx=8)
-        frame, self.students_tree = tree(page, [('id', '学号', 130), ('name', '姓名', 90), ('group', '班级', 90), ('samples', '样本', 55), ('active', '状态', 60),('coverage','人脸覆盖',90)])
+        frame, self.students_tree = tree(page, [('id', '学号', 130), ('name', '姓名', 90), ('group', '班级', 90), ('samples', '样本', 55), ('active', '状态', 60),('coverage','人脸覆盖',90)], empty_text='暂无学生\n点击“新建”或“导入名单”开始')
         frame.grid(row=1, column=0, sticky='nsew', padx=(0, 20))
         self.students_tree.bind('<<TreeviewSelect>>', self.select_student)
-        form = tk.Frame(page, bg=WHITE)
-        form.grid(row=0, column=1, rowspan=2, sticky='nsew')
+        self.student_form_scroll = ScrollableFrame(page)
+        self.student_form_scroll.grid(row=0, column=1, rowspan=2, sticky='nsew')
+        form = self.student_form_scroll.body
         form.columnconfigure(0, weight=1)
         label(form, '学生信息', size=13, bold=True).grid(row=0, column=0, sticky='w', pady=(0, 3))
         self.student_id = tk.StringVar()
@@ -152,14 +222,17 @@ class AdminApp(BaseWindow):
         self.active_button.grid(row=8, column=0, sticky='ew', pady=(0, 16))
         ttk.Separator(form).grid(row=9, column=0, sticky='ew', pady=(0, 14))
         label(form, '人脸资料', size=13, bold=True).grid(row=10, column=0, sticky='w')
-        capture = button(form, '采集人脸（20 张）', self.capture_faces)
+        capture = button(form, f'采集人脸（{CAPTURE_TARGET} 张）', self.capture_faces)
         capture.grid(row=11, column=0, sticky='ew', pady=(12, 10))
         training = button(form, '更新识别模型', self.train_faces)
         training.grid(row=12, column=0, sticky='ew')
         self.task_buttons.extend([capture, training])
         self.model_label = label(form, '', size=9, color=MUTED, wraplength=290, justify='left')
         self.model_label.grid(row=13, column=0, sticky='ew', pady=(13, 0))
-        label(page, '停用仅阻止后续刷脸及默认入选新课次；既有应到名单请在课次管理中单独调整。', size=9, color=MUTED).grid(row=2, column=0, columnspan=2, sticky='w', pady=(14, 0))
+        button(form, '登记授权 / 查看保存期限', lambda: self.notebook.select(self.pages['privacy']), plain=True).grid(row=14, column=0, sticky='ew', pady=10)
+        hint = label(page, '停用仅阻止后续刷脸及默认入选新课次；既有应到名单请在课次管理中单独调整。', size=9, color=MUTED, justify='left')
+        hint.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10, 0))
+        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(1,event.width)))
 
     @ui_flow
     def refresh_students(self):
@@ -172,9 +245,14 @@ class AdminApp(BaseWindow):
         self.students_data = (yield IO(partial(self.store.students)))
         groups = sorted({row['group_name'] for row in self.students_data if row['active']})
         self.session_group_combo.configure(values=['全部学生'] + groups)
-        healthy, message, manifest = (yield IO(partial(model_health, {row['student_id'] for row in self.students_data if row['active']})))
+        consented = yield IO(FaceLifecycleService(self.store).eligible_ids)
+        healthy, message, manifest = (yield IO(partial(model_health, consented_ids=consented)))
         trained = set(manifest['student_ids']) if manifest else set()
         active_ids={row['student_id'] for row in self.students_data if row['active']}
+        self.face_summary = dict(healthy=healthy, message=message, active=len(active_ids),
+                                 covered=len(trained & active_ids) if healthy else 0,
+                                 missing=len(active_ids-trained) if healthy else len(active_ids))
+        self.dashboard.render_face_status()
         missing = sum((row['active'] and row['student_id'] not in trained for row in self.students_data))
         replace_rows(self.students_tree, [(row['student_id'], (row['student_id'], row['name'], row['group_name'], counts[row['student_id']], '启用' if row['active'] else '停用',
             '停用' if not row['active'] else '已训练' if healthy and row['student_id'] in trained else '需训练'), '' if row['active'] else 'muted') for row in self.students_data])
@@ -205,15 +283,11 @@ class AdminApp(BaseWindow):
 
     @ui_flow
     def save_student(self):
-
-        @self.flow
-        def save():
-            yield IO(partial(self.store.save_student, self.student_id.get(), self.student_name.get(), self.student_group.get()))
-            sid = self.student_id.get().strip()
-            yield from self.refresh_students()
-            self.students_tree.selection_set(sid)
-            self.say('学生信息已保存，历史课次名单保持原样')
-        yield from save()
+        yield IO(partial(self.store.save_student, self.student_id.get(), self.student_name.get(), self.student_group.get()))
+        sid = self.student_id.get().strip()
+        yield from self.refresh_students()
+        self.students_tree.selection_set(sid)
+        self.say('学生信息已保存，历史课次名单保持原样')
 
     @ui_flow
     def toggle_active(self):
@@ -229,12 +303,14 @@ class AdminApp(BaseWindow):
             self.say('学生状态已更新；如模型提示待更新，请重新训练')
         yield from change()
 
+    @ui_flow
     def capture_faces(self):
         if not self.selected_student or not self.selected_student['active']:
             self.say('请先保存并选择一位启用的学生')
             return
         if self.capture_dialog and self.capture_dialog.window.winfo_exists():
             return
+        yield IO(partial(FaceLifecycleService(self.store).require, self.selected_student['student_id']))
         self.capture_dialog = CaptureDialog(self.root, self.store, self.selected_student, self.capture_done)
 
     @ui_flow
@@ -246,7 +322,8 @@ class AdminApp(BaseWindow):
     @ui_flow
     def train_faces(self):
         ids = {row['student_id'] for row in (yield IO(partial(self.store.students, active_only=True)))}
-        self.run_job('更新识别模型', lambda: train_model(allowed_ids=ids), lambda result: self.refresh_students())
+        timeouts = yield IO(MaintenanceService(self.store).timeouts)
+        self.run_job('更新识别模型', lambda: train_model(allowed_ids=ids, store=self.store), lambda result: self.refresh_students(), timeout=timeouts['training'])
 
     @ui_flow
     def roster_template(self):
@@ -278,26 +355,32 @@ class AdminApp(BaseWindow):
         page = self.pages['sessions']
         page.columnconfigure(1, weight=1)
         page.rowconfigure(0, weight=1)
-        form = tk.Frame(page, bg=WHITE)
-        form.grid(row=0, column=0, sticky='nsw', padx=(0, 24))
+        page.columnconfigure(0, minsize=290)
+        self.session_form_scroll = ScrollableFrame(page)
+        self.session_form_scroll.grid(row=0, column=0, sticky='nsew', padx=(0, 20))
+        form = self.session_form_scroll.body
         form.columnconfigure(0, weight=1)
         label(form, '创建课次', size=14, bold=True).grid(row=0, column=0, sticky='w', pady=(0, 4))
         self.course = tk.StringVar()
         self.session_group = tk.StringVar(value='全部学生')
         now = datetime.now().replace(second=0, microsecond=0)
         self.starts = tk.StringVar(value=now.strftime('%Y-%m-%d %H:%M'))
+        self.opens = tk.StringVar(value=(now - timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M'))
+        self.late = tk.StringVar(value=(now + timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M'))
         self.ends = tk.StringVar(value=(now + timedelta(minutes=90)).strftime('%Y-%m-%d %H:%M'))
         self.grace = tk.StringVar(value='10')
         entry_field(form, '课程名称', self.course, 1, 27)
         label(form, '班级', size=9, color=MUTED).grid(row=3, column=0, sticky='w', pady=(10, 5))
         self.session_group_combo = ttk.Combobox(form, textvariable=self.session_group, state='readonly', width=25)
         self.session_group_combo.grid(row=4, column=0, sticky='ew')
-        entry_field(form, '签到开始（年-月-日 时:分）', self.starts, 5, 27)
-        entry_field(form, '签到结束（年-月-日 时:分）', self.ends, 7, 27)
-        label(form, '迟到宽限（分钟）', size=9, color=MUTED).grid(row=9, column=0, sticky='w', pady=(10, 5))
-        ttk.Spinbox(form, textvariable=self.grace, from_=0, to=180, width=25).grid(row=10, column=0, sticky='ew')
-        button(form, '创建课次', self.create_session, primary=True).grid(row=11, column=0, sticky='ew', pady=(20, 16))
-        label(form, '创建后在右侧选中课次，再开启签到。\n同一时刻仅开放一个课次。', size=9, color=MUTED, justify='left', wraplength=270).grid(row=12, column=0, sticky='w')
+        entry_field(form, '开放签到（年-月-日 时:分）', self.opens, 5, 27)
+        entry_field(form, '正式上课（年-月-日 时:分）', self.starts, 7, 27)
+        entry_field(form, '迟到起点（年-月-日 时:分）', self.late, 9, 27)
+        entry_field(form, '关闭签到（年-月-日 时:分）', self.ends, 11, 27)
+        self.create_session_button = button(self.session_form_scroll, '创建课次', self.create_session, primary=True)
+        self.create_session_button.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(12, 0))
+        button(form, '课程模板 / 周期课次', self.course_schedule, plain=True).grid(row=15, column=0, sticky='ew', pady=(12, 0))
+        label(form, '开放 ≤ 上课 ≤ 迟到 ≤ 关闭；上课早于关闭。\n创建后仍需手动开启，同一时刻只开放一个课次。', size=9, color=MUTED, justify='left', wraplength=270).grid(row=14, column=0, sticky='w')
         right = tk.Frame(page, bg=WHITE)
         right.grid(row=0, column=1, sticky='nsew')
         right.rowconfigure(2, weight=1)
@@ -308,26 +391,40 @@ class AdminApp(BaseWindow):
         self.open_session_button.pack(side='left')
         self.close_session_button = button(toolbar, '结束签到', self.close_session)
         self.close_session_button.pack(side='left', padx=10)
+        self.manual_button = button(toolbar, '人工点名', self.manual_roll_call)
+        self.manual_button.pack(side='left', padx=(0, 10))
         self.cancel_session_button = button(toolbar, '取消课次', self.cancel_session, plain=True)
         self.cancel_session_button.pack(side='left')
-        button(toolbar, '打开学生端', lambda: launch_script('student_app.py'), plain=True).pack(side='right')
         actions = tk.Frame(right, bg=WHITE)
         actions.grid(row=1, column=0, sticky='ew', pady=(0, 12))
-        self.roster_button = button(actions, '查看 / 调整应到名单', self.manage_roster)
+        self.roster_button = button(actions, '应到名单', self.manage_roster)
         self.roster_button.pack(side='left')
-        self.session_detail_button = button(actions, '课次详情 / 取消原因', self.show_session_detail, plain=True)
+        self.session_detail_button = button(actions, '课次详情', self.show_session_detail, plain=True)
         self.session_detail_button.pack(side='left', padx=10)
-        frame, self.sessions_tree = tree(right, [('course', '课程 / 班级', 180), ('time', '开始时间', 155), ('state', '状态', 80), ('count', '到课', 70)])
+        button(actions, '打开学生端', lambda: launch_script('student_app.py'), plain=True).pack(side='right')
+        frame, self.sessions_tree = tree(right, [('course', '课程 / 班级', 180), ('time', '正式上课', 155), ('state', '状态', 80), ('count', '到课', 70)], empty_text='暂无课次\n请在左侧填写信息并创建课次')
         frame.grid(row=2, column=0, sticky='nsew')
         self.sessions_tree.bind('<<TreeviewSelect>>', self.sync_session_actions)
-        label(right, '待开启或已取消课次不计考勤；只有已结束课次的未签到者计缺勤。', size=9, color=MUTED, wraplength=660).grid(row=3, column=0, sticky='w', pady=(14, 0))
+        hint = label(right, '待开启或已取消课次不计考勤；只有已结束课次的未签到者计缺勤。', size=9, color=MUTED, justify='left')
+        hint.grid(row=3, column=0, sticky='ew', pady=(10, 0))
+        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(1,event.width)))
+
+    def course_schedule(self):
+        if self.schedule_dialog and not self.schedule_dialog.closed:
+            self.schedule_dialog.root.lift()
+            return
+        self.schedule_dialog = CourseScheduleDialog(self)
 
     @ui_flow
     def create_session(self):
 
         @self.flow
         def create():
-            sid = (yield IO(partial(self.store.create_session, self.course.get(), self.session_group.get(), datetime.strptime(self.starts.get().strip(), '%Y-%m-%d %H:%M'), datetime.strptime(self.ends.get().strip(), '%Y-%m-%d %H:%M'), int(self.grace.get()))))
+            sid = (yield IO(partial(self.store.create_session, self.course.get(), self.session_group.get(),
+                                   datetime.strptime(self.starts.get().strip(), '%Y-%m-%d %H:%M'),
+                                   datetime.strptime(self.ends.get().strip(), '%Y-%m-%d %H:%M'),
+                                   opens_at=datetime.strptime(self.opens.get().strip(), '%Y-%m-%d %H:%M'),
+                                   late_at=datetime.strptime(self.late.get().strip(), '%Y-%m-%d %H:%M'))))
             yield from self.refresh_sessions()
             self.sessions_tree.selection_set(str(sid))
             self.say('课次已创建，确认时间后点击“开启签到”')
@@ -345,8 +442,7 @@ class AdminApp(BaseWindow):
         @self.flow
         def start():
             sid = self.selected_session_id()
-            ids = {row['student_id'] for row in (yield IO(partial(self.store.students, active_only=True)))}
-            healthy, message, manifest = (yield IO(partial(model_health, ids)))
+            healthy, message, manifest = (yield IO(model_health))
             if not healthy:
                 raise ValueError(message)
             missing = [row for row in (yield IO(partial(self.store.session_rows, sid))) if row['student_id'] not in set(manifest['student_ids'])]
@@ -375,8 +471,49 @@ class AdminApp(BaseWindow):
         selected = self.sessions_tree.selection()
         item = next((row for row in self.sessions_data if selected and str(row['id']) == selected[0]), None)
         state = item['state'] if item else None
-        for widget, allowed in [(self.open_session_button, state == 'draft'), (self.close_session_button, state == 'open'), (self.cancel_session_button, state == 'draft'), (self.roster_button, state in {'draft', 'open', 'closed'}), (self.session_detail_button, item is not None)]:
+        for widget, allowed in [(self.open_session_button, state == 'draft'), (self.close_session_button, state == 'open'), (self.manual_button, state in {'draft', 'open', 'closed'}), (self.cancel_session_button, state == 'draft'), (self.roster_button, state in {'draft', 'open', 'closed'}), (self.session_detail_button, item is not None)]:
             widget.configure(state='normal' if allowed else 'disabled')
+
+    def manual_roll_call(self, from_records=False, session_id=None):
+        def show():
+            if self.manual_dialog and not self.manual_dialog.closed:
+                self.manual_dialog.root.lift()
+                return
+            sid = session_id if session_id is not None else self.record_session_id() if from_records else self.selected_session_id()
+            self.manual_dialog = ManualAttendanceDialog(self, sid)
+        self.guarded(show)
+
+    def show_review(self, session_id):
+        if self.review_dialog and not self.review_dialog.closed:
+            self.review_dialog.root.lift()
+            return
+        self.review_dialog = SessionReviewDialog(self, session_id)
+
+    @ui_flow
+    def show_dashboard_session(self, session_id):
+        yield from self.refresh_sessions()
+        if not self.sessions_tree.exists(str(session_id)):
+            raise ValueError('该课次已不可用，请刷新首页。')
+        self.notebook.select(self.pages['sessions'])
+        self.sessions_tree.selection_set(str(session_id))
+        self.sessions_tree.see(str(session_id))
+        self.sync_session_actions()
+
+    @ui_flow
+    def show_dashboard_records(self, session_id, student_id=None):
+        session = yield IO(partial(self.store.session, session_id))
+        if session['state'] not in {'open', 'closed'}:
+            raise ValueError('只有签到中或已结束课次可以核对考勤。')
+        self.record_target = session
+        self.record_period_combo.configure(values=[*PERIODS, '选定课次日期'])
+        self.record_period.set('选定课次日期')
+        self.record_status.set('全部')
+        self.record_choice.set('全部课次')
+        yield from self.refresh_records()
+        self.notebook.select(self.pages['records'])
+        if student_id and self.records_tree.exists(student_id):
+            self.records_tree.selection_set(student_id)
+            self.records_tree.see(student_id)
 
     @ui_flow
     def cancel_session(self):
@@ -389,7 +526,7 @@ class AdminApp(BaseWindow):
                 raise ValueError('只能取消待开启课次。')
             dialog = tk.Toplevel(self.root)
             dialog.title('取消课次')
-            dialog.geometry('570x440')
+            fit_window(dialog, '570x440', minimum=(500, 400))
             dialog.configure(bg=WHITE)
             dialog.transient(self.root)
             dialog.grab_set()
@@ -419,7 +556,7 @@ class AdminApp(BaseWindow):
     def text_details(self, title, text):
         dialog = tk.Toplevel(self.root)
         dialog.title(title)
-        dialog.geometry('900x640')
+        fit_window(dialog, '900x640', minimum=(620, 440))
         body = tk.Text(dialog, wrap='word', font=('Microsoft YaHei UI', 10), padx=16, pady=16)
         scroll = ttk.Scrollbar(dialog, command=body.yview)
         scroll.pack(side='right', fill='y')
@@ -437,15 +574,15 @@ class AdminApp(BaseWindow):
             sid = self.selected_session_id()
             rows = (yield IO(partial(self.store.session_rows, sid, include_removed=True)))
             session = (yield IO(partial(self.store.session, sid)))
-            content = [f"课次 #{sid}  {session['course_name']} / {session['group_name']}", f"状态：{STATE_TEXT[session['state']]}", f"时段：{session['starts_at']} 至 {session['ends_at']}"]
+            content = [f"课次 #{sid}  {session['course_name']} / {session['group_name']}", f"状态：{STATE_TEXT[session['state']]}", session_time_text(session)]
             if session['state'] == 'cancelled':
                 content.extend([f"取消时间：{session['cancelled_at']}", f"取消原因：{session['cancel_reason']}", '该课次不参与考勤统计。'])
             content.append('\n保留名单（含已移出人员）：')
             content.extend((f"{r['student_id']}  {r['name']}  {r['group_name']}  {STATUS_TEXT[r['status']]}" for r in rows))
             content.append('\n课次与名单操作记录：')
             for item in (yield IO(partial(self.store.audit_rows, sid))):
-                if item['action'] in {'取消课次', '调整课次名单', '结束签到', '开启签到', '课次到时关闭'}:
-                    content.append(f"{item['created_at']}  {item['action']}  {self.actor_text(item)}\n{self.audit_detail(item)}")
+                if item['action'] in SESSION_ACTIONS:
+                    content.append(f"{item['created_at']}  {action_text(item['action'])}  {self.actor_text(item)}\n{self.audit_detail(item)}")
                     if item['before_json']:
                         content.append(f"调整前：\n{self.snapshot_text(item['before_json'])}\n调整后：\n{self.snapshot_text(item['after_json'])}")
             self.text_details('课次详情 / 取消原因', '\n'.join(content))
@@ -460,8 +597,9 @@ class AdminApp(BaseWindow):
         if not raw:
             return '旧版未保存完整原值'
         value = json.loads(raw)
-        names = {'session_id': '课次编号', 'student_id': '学号', 'name': '姓名', 'group_name': '班级', 'status': '状态', 'signed_at': '实际到课时间', 'method': '记录方式', 'note': '备注', 'included': '计入应到', 'id': '课次编号', 'course_name': '课程', 'starts_at': '开始时间', 'late_at': '迟到起点', 'ends_at': '结束时间', 'state': '课次状态', 'created_at': '创建时间', 'cancel_reason': '取消原因', 'cancelled_at': '取消时间'}
-        methods = {'face': '人脸识别', 'manual': '人工更正', 'legacy': '历史迁移'}
+        names = {'session_id': '课次编号', 'student_id': '学号', 'student_ids': '所选学号', 'changed': '登记人数', 'name': '姓名', 'group_name': '班级', 'status': '状态', 'signed_at': '实际到课时间', 'method': '记录方式', 'note': '备注', 'included': '计入应到', 'id': '课次编号', 'course_name': '课程', 'opens_at': '开放签到', 'starts_at': '正式上课', 'late_at': '迟到起点', 'ends_at': '关闭签到', 'state': '课次状态', 'created_at': '创建时间', 'cancel_reason': '取消原因', 'cancelled_at': '取消时间'}
+        names.update(reviewed_at='核对时间', actor='操作署名（未认证）', expected='应到', arrived='已到', present='已签到',
+                     late='迟到', leave='请假', absent='缺勤', pending='未签到', unknown_time='到课时间未确认')
 
         def fields(row):
             output = []
@@ -471,11 +609,11 @@ class AdminApp(BaseWindow):
                 elif key == 'state':
                     item = STATE_TEXT.get(item, item)
                 elif key == 'method':
-                    item = methods.get(item, item)
+                    item = method_text(item, default=item)
                 elif key == 'included':
                     item = '是' if item else '否'
-                elif key == 'signed_at' and item is None and (row.get('status') in {'present', 'late'}):
-                    item = '时间未确认'
+                elif key == 'signed_at' and item is None and is_time_unknown(row):
+                    item = arrival_time_note(row)
                 if item is None or item == '':
                     item = '无'
                 output.append(f'{names.get(key, key)}：{item}')
@@ -485,7 +623,7 @@ class AdminApp(BaseWindow):
     @staticmethod
     def audit_detail(item):
         detail = item['detail']
-        if item['action'] == '人工更正' and '；原因：' in detail:
+        if item['action'] == CORRECT_ATTENDANCE and '；原因：' in detail:
             transition, reason = detail.split('；原因：', 1)
             states = transition.split(' → ')
             return ' → '.join((STATUS_TEXT.get(state, state) for state in states)) + f'；原因：{reason}'
@@ -502,8 +640,7 @@ class AdminApp(BaseWindow):
                 raise ValueError('已取消课次只能查询。')
             dialog = tk.Toplevel(self.root)
             dialog.title('课次应到名单')
-            dialog.geometry('1080x760')
-            dialog.minsize(920, 700)
+            fit_window(dialog, '1080x760', minimum=(920, 560))
             dialog.configure(bg=WHITE)
             dialog.transient(self.root)
             dialog.grab_set()
@@ -518,9 +655,6 @@ class AdminApp(BaseWindow):
             body.rowconfigure(0, weight=1)
             frame, listing = tree(body, [('id', '学号', 100), ('name', '姓名', 90), ('group', '班级', 110), ('status', '当前状态', 120), ('time', '实际到课时间', 180)], height=6)
             frame.grid(row=0, column=0, sticky='nsew', padx=(0, 16))
-            horizontal = ttk.Scrollbar(frame, orient='horizontal', command=listing.xview)
-            horizontal.grid(row=1, column=0, sticky='ew')
-            listing.configure(xscrollcommand=horizontal.set)
             rows = (yield IO(partial(self.store.session_rows, sid, include_removed=True)))
             replace_rows(listing, [(r['student_id'], (r['student_id'], r['name'], r['group_name'], STATUS_TEXT[r['status']], r['signed_at'] or '—'), '') for r in rows])
             row_lookup = {r['student_id']: r for r in rows}
@@ -531,8 +665,9 @@ class AdminApp(BaseWindow):
                 if selected:
                     yield from self.show_attendance_history(sid, selected[0], row_lookup[selected[0]])
             button(body, '查看选中人员原始证据 / 更正历史', history, plain=True).grid(row=1, column=0, sticky='w', pady=5)
-            form = tk.Frame(body, bg=WHITE)
-            form.grid(row=0, column=1, rowspan=2, sticky='new')
+            form_scroll = ScrollableFrame(body)
+            form_scroll.grid(row=0, column=1, rowspan=2, sticky='nsew')
+            form = form_scroll.body
             form.columnconfigure(0, weight=1)
             add = tk.StringVar()
             remove = tk.StringVar()
@@ -606,11 +741,17 @@ class AdminApp(BaseWindow):
         yield from show()
 
     @ui_flow
-    def refresh_sessions(self):
+    def refresh_sessions(self, *, refresh_records=True):
         self.sessions_data = (yield IO(partial(self.store.sessions)))
         replace_rows(self.sessions_tree, [(row['id'], (f"{row['course_name']} / {row['group_name']}", row['starts_at'].replace('T', ' ')[:16], STATE_TEXT[row['state']], f"{row['arrived']}/{row['expected']}" if row['state'] in {'open', 'closed'} else '—'), 'good' if row['state'] == 'open' else 'muted' if row['state'] in {'closed', 'cancelled'} else '') for row in self.sessions_data])
         self.sync_session_actions()
-        yield from self.refresh_records()
+        if refresh_records:
+            yield from self.refresh_records()
+        self.dashboard.refresh()
+
+    def records_selected(self, event=None):
+        if self.notebook.select() == str(self.pages['records']):
+            self.refresh_records()
 
     def build_records(self):
         page = self.pages['records']
@@ -640,20 +781,23 @@ class AdminApp(BaseWindow):
         self.record_summary = label(page, '暂无课次', size=10, color=MUTED)
         self.record_summary.grid(row=3, column=0, sticky='w', pady=(0, 12))
         button(toolbar, '导出 Excel', self.export).pack(side='right')
+        button(toolbar, '人工点名', lambda: self.manual_roll_call(from_records=True), plain=True).pack(side='left')
         button(toolbar, '人工更正', self.correct_record, plain=True).pack(side='right', padx=8)
         button(toolbar, '原始证据 / 更正历史', self.show_selected_history, plain=True).pack(side='right')
         button(toolbar, '操作记录', self.show_audit, plain=True).pack(side='right')
-        frame, self.records_tree = tree(page, [('id', '学号', 110), ('name', '姓名', 80), ('group', '班级', 100), ('status', '状态', 75), ('course', '课程', 165), ('start', '课次开始时间', 155), ('time', '实际到课时间', 130), ('method', '方式', 65), ('note', '备注', 140)])
+        frame, self.records_tree = tree(page, [('id', '学号', 110), ('name', '姓名', 80), ('group', '班级', 100), ('status', '状态', 75), ('course', '课程', 165), ('start', '正式上课时间', 155), ('time', '实际到课时间', 130), ('method', '方式', 65), ('note', '备注', 140)], empty_text='当前筛选范围内暂无考勤记录\n可切换时间范围或课次')
         frame.grid(row=4, column=0, sticky='nsew')
-        horizontal = ttk.Scrollbar(frame, orient='horizontal', command=self.records_tree.xview)
-        horizontal.grid(row=1, column=0, sticky='ew')
-        self.records_tree.configure(xscrollcommand=horizontal.set)
         self.record_range_label = label(page, '', size=9, color=MUTED)
         self.record_range_label.grid(row=5, column=0, sticky='w', pady=(12, 0))
 
     @ui_flow
     def record_window(self, now=None):
         now = now or datetime.now()
+        if self.record_period.get() == '选定课次日期':
+            if not self.record_target:
+                raise ValueError('请从首页重新选择需要核对的课次。')
+            start = datetime.fromisoformat(self.record_target['starts_at']).replace(hour=0, minute=0, second=0, microsecond=0)
+            return start, start+timedelta(days=1)
         semester = (yield IO(partial(self.store.semester_dates, now))) if self.record_period.get() == '当前学期' else None
         return record_date_range(self.record_period.get(), now, semester)
 
@@ -669,7 +813,8 @@ class AdminApp(BaseWindow):
     @ui_flow
     def refresh_records(self):
         now = datetime.now()
-        requested=(self.record_period.get(),self.record_status.get(),self.record_choice.get())
+        target = self.record_target if self.record_period.get() == '选定课次日期' else None
+        requested=(self.record_period.get(),self.record_status.get(),self.record_choice.get(), target['id'] if target else None)
         try:
             start, end = (yield from self.record_window(now))
         except ValueError as error:
@@ -683,11 +828,17 @@ class AdminApp(BaseWindow):
             self.record_range_label.configure(text=str(error))
             return
         rows = (yield IO(partial(self.store.attendance_records, start, end, now=now)))
-        if requested!=(self.record_period.get(),self.record_status.get(),self.record_choice.get()):
+        current_target = self.record_target if self.record_period.get() == '选定课次日期' else None
+        if requested!=(self.record_period.get(),self.record_status.get(),self.record_choice.get(),current_target['id'] if current_target else None):
             self.schedule(0,self.refresh_records)
             return
         self.record_lookup = {f"#{row['session_id']}  {row['course_name']} · {row['session_group_name']} · {row['session_starts_at'].replace('T', ' ')[:16]}": row['session_id'] for row in rows}
-        choices = ['全部课次'] + list(self.record_lookup)
+        if target:
+            rows = [row for row in rows if row['session_id'] == target['id']]
+            choice = f"#{target['id']}  {target['course_name']} · {target['group_name']} · {target['starts_at'].replace('T', ' ')[:16]}"
+            self.record_lookup = {choice: target['id']}
+            self.record_choice.set(choice)
+        choices = list(self.record_lookup) if target else ['全部课次'] + list(self.record_lookup)
         old = self.record_choice.get()
         self.record_combo.configure(values=choices)
         self.record_combo.current(choices.index(old) if old in choices else 0)
@@ -696,11 +847,12 @@ class AdminApp(BaseWindow):
         if sid is not None:
             rows = [row for row in rows if row['session_id'] == sid]
         counts = Counter((row['status'] for row in rows))
-        self.record_summary.configure(text=f"应到 {len(rows)} 人次  ·  已到 {counts['present'] + counts['late']}  ·  迟到 {counts['late']}  ·  请假 {counts['leave']}  ·  缺勤 {counts['absent']}  ·  未签到 {counts['pending']}")
+        arrived = sum(counts[status] for status in ARRIVED_STATUSES)
+        self.record_summary.configure(text=f"应到 {len(rows)} 人次  ·  已到 {arrived}  ·  迟到 {counts['late']}  ·  请假 {counts['leave']}  ·  缺勤 {counts['absent']}  ·  未签到 {counts['pending']}")
         self.record_rows = [row for row in rows if self.record_status.get() != '缺勤' or row['status'] == 'absent']
         self.record_row_lookup = {row['student_id'] if sid is not None else f"{row['session_id']}:{row['student_id']}": row for row in self.record_rows}
-        replace_rows(self.records_tree, [(key, (row['student_id'], row['name'], row['group_name'], STATUS_TEXT[row['status']], row['course_name'], row['session_starts_at'].replace('T', ' ')[:16], row['signed_at'][11:19] if row['signed_at'] else '时间未确认' if row['status'] in {'present', 'late'} else '—', {'face': '人脸', 'manual': '人工', 'legacy': '迁移'}.get(row['method'], ''), row['note'] or ''), 'good' if row['status'] == 'present' else 'warning' if row['status'] == 'late' else 'muted') for key, row in self.record_row_lookup.items()])
-        self.record_range_label.configure(text=f'{start:%Y-%m-%d} 至 {end - timedelta(days=1):%Y-%m-%d} · 按课次开始日期统计 · 显示 {len(self.record_rows)} 条')
+        replace_rows(self.records_tree, [(key, (row['student_id'], row['name'], row['group_name'], STATUS_TEXT[row['status']], row['course_name'], row['session_starts_at'].replace('T', ' ')[:16], row['signed_at'][11:19] if row['signed_at'] else arrival_time_note(row) or '—', method_text(row['method'], short=True), row['note'] or ''), 'good' if row['status'] == 'present' else 'warning' if row['status'] == 'late' else 'muted') for key, row in self.record_row_lookup.items()])
+        self.record_range_label.configure(text=f'{start:%Y-%m-%d} 至 {end - timedelta(days=1):%Y-%m-%d} · 按正式上课日期统计 · 显示 {len(self.record_rows)} 条')
 
     @ui_flow
     def correct_record(self):
@@ -717,30 +869,35 @@ class AdminApp(BaseWindow):
             return
         dialog = tk.Toplevel(self.root)
         dialog.title('人工更正')
-        dialog.geometry('620x740')
+        fit_window(dialog, '620x740', minimum=(560, 480))
         dialog.configure(bg=WHITE)
         dialog.transient(self.root)
         dialog.grab_set()
-        label(dialog, f"{row['name']} · {student_id}", size=14, bold=True).pack(anchor='w', padx=24, pady=(20, 5))
-        label(dialog, f"{selected['course_name']} · {selected['session_starts_at'].replace('T', ' ')[:16]}", size=9, color=MUTED, wraplength=450, justify='left').pack(anchor='w', padx=24, pady=(0, 12))
+        actions = tk.Frame(dialog, bg=WHITE)
+        actions.pack(side='bottom', fill='x', padx=24, pady=12)
+        fields = ScrollableFrame(dialog)
+        fields.pack(fill='both', expand=True, padx=8)
+        body = fields.body
+        label(body, f"{row['name']} · {student_id}", size=14, bold=True).pack(anchor='w', padx=16, pady=(16, 5))
+        label(body, f"{selected['course_name']} · {selected['session_starts_at'].replace('T', ' ')[:16]}", size=9, color=MUTED, wraplength=450, justify='left').pack(anchor='w', padx=16, pady=(0, 12))
         choice = tk.StringVar(value=STATUS_TEXT[row['status']] if row['status'] != 'pending' else '已签到')
         options = {STATUS_TEXT[key]: key for key in ['present', 'late', 'leave', 'absent']}
-        ttk.Combobox(dialog, textvariable=choice, values=list(options), state='readonly').pack(fill='x', padx=24)
-        form = tk.Frame(dialog, bg=WHITE)
-        form.pack(fill='x', padx=24)
+        ttk.Combobox(body, textvariable=choice, values=list(options), state='readonly').pack(fill='x', padx=16)
+        form = tk.Frame(body, bg=WHITE)
+        form.pack(fill='x', padx=16)
         form.columnconfigure(0, weight=1)
         actual = tk.StringVar(value=(row['signed_at'] or '').replace('T', ' '))
-        unknown = tk.BooleanVar(value=row['status'] in {'present', 'late'} and (not row['signed_at']))
+        unknown = tk.BooleanVar(value=is_time_unknown(row))
         note = tk.StringVar(value=row['note'] or '')
         actor = tk.StringVar()
         entry_field(form, '实际到课时间（年-月-日 时:分[:秒]；留空保留原值）', actual, 0)
         ttk.Checkbutton(form, text='时间未确认（不会自动填当前时间）', variable=unknown, command=lambda: actual.set('') if unknown.get() else None).grid(row=2, column=0, sticky='w', pady=10)
         entry_field(form, '当前备注（与修改原因分别保存）', note, 3)
         entry_field(form, '操作署名（选填，未经账号认证）', actor, 5)
-        label(dialog, '原始刷脸证据会保留；实际到课时间与本次操作时间分别记录。', size=9, color=MUTED, wraplength=560).pack(anchor='w', padx=24, pady=(12, 0))
-        label(dialog, '修改原因（必填，会写入操作记录）', size=9, color=MUTED).pack(anchor='w', padx=24, pady=(12, 7))
-        reason = tk.Text(dialog, height=3, font=('Microsoft YaHei UI', 10), relief='solid', bd=1)
-        reason.pack(fill='x', padx=24)
+        label(body, '原始刷脸证据会保留；实际到课时间与本次操作时间分别记录。', size=9, color=MUTED, wraplength=490, justify='left').pack(anchor='w', padx=16, pady=(12, 0))
+        label(body, '修改原因（必填，会写入操作记录）', size=9, color=MUTED).pack(anchor='w', padx=16, pady=(12, 7))
+        reason = tk.Text(body, height=3, width=30, font=('Microsoft YaHei UI', 10), relief='solid', bd=1)
+        reason.pack(fill='x', padx=16, pady=(0, 12))
 
         @self.flow
         def save():
@@ -758,7 +915,8 @@ class AdminApp(BaseWindow):
             dialog.destroy()
             self.say('考勤已更正，修改原因已记录')
             yield from self.refresh_sessions()
-        button(dialog, '保存更正', save, primary=True).pack(anchor='e', padx=24, pady=20)
+        button(actions, '返回', dialog.destroy, plain=True).pack(side='left')
+        button(actions, '保存更正', save, primary=True).pack(side='right')
 
     @ui_flow
     def show_selected_history(self):
@@ -773,7 +931,7 @@ class AdminApp(BaseWindow):
     def show_attendance_history(self, session_id, student_id, row):
         history = (yield IO(partial(self.store.attendance_history, session_id, student_id)))
         evidence = history['evidence']
-        lines = [f"课次 #{session_id}  {student_id}  {row['name']}", f"当前状态：{STATUS_TEXT[row['status']]}", f"当前实际到课时间：{row['signed_at'] or ('时间未确认' if row['status'] in {'present', 'late'} else '无')}", f"当前备注：{row['note'] or '无'}", '\n原始人脸证据：']
+        lines = [f"课次 #{session_id}  {student_id}  {row['name']}", f"当前状态：{STATUS_TEXT[row['status']]}", f"当前实际到课时间：{row['signed_at'] or (arrival_time_note(row) or '无')}", f"当前备注：{row['note'] or '无'}", '\n原始人脸证据：']
         if evidence:
             lines.extend([f"首次人脸签到时间：{evidence['signed_at']}", f"识别方式：{evidence['method']}", '来源：' + ('升级时保留的现存原值' if evidence['origin'] == 'migrated_current' else '现场识别保存')])
         else:
@@ -787,6 +945,9 @@ class AdminApp(BaseWindow):
 
     @ui_flow
     def export(self):
+        if self.busy:
+            self.say('请等待当前后台任务完成后再导出')
+            return
 
         @self.flow
         def save():
@@ -796,8 +957,9 @@ class AdminApp(BaseWindow):
             title = f'考勤记录 · {self.record_period.get()} · {self.record_status.get()}'
             path = filedialog.asksaveasfilename(parent=self.root, title='导出筛选后的考勤', initialfile=f'考勤_{self.record_period.get()}_{self.record_status.get()}_{start:%Y%m%d}.xlsx', defaultextension='.xlsx', filetypes=[('Excel 考勤', '*.xlsx')])
             if path:
-                yield IO(partial(self.store.export_attendance, path, start, end, status, sid, title))
-                self.say('已按当前时间、状态和课次筛选导出')
+                timeouts = yield IO(MaintenanceService(self.store).timeouts)
+                self.run_job('导出考勤记录', partial(self.store.export_attendance, path, start, end, status, sid, title),
+                             done=lambda result: self.say('已按当前时间、状态和课次筛选导出'), timeout=timeouts['export'])
         yield from save()
 
     @ui_flow
@@ -811,7 +973,7 @@ class AdminApp(BaseWindow):
             dates = default_semester_dates()
         dialog = tk.Toplevel(self.root)
         dialog.title('当前学期设置')
-        dialog.geometry('510x440')
+        fit_window(dialog, '510x440', minimum=(490, 420))
         dialog.configure(bg=WHITE)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -860,28 +1022,38 @@ class AdminApp(BaseWindow):
             sid = self.record_session_id()
             dialog = tk.Toplevel(self.root)
             dialog.title('课次操作记录')
-            dialog.geometry('1000x520')
+            fit_window(dialog, '1000x520', minimum=(740, 440))
             frame, widget = tree(dialog, [('time', '时间', 170), ('action', '操作', 130), ('student', '学号', 110), ('actor', '操作来源 / 署名', 220), ('detail', '详情', 420)])
             frame.pack(fill='both', expand=True, padx=16, pady=16)
             rows = (yield IO(partial(self.store.audit_rows, sid)))
-            replace_rows(widget, [(row['id'], (row['created_at'].replace('T', ' '), row['action'], row['student_id'] or '', self.actor_text(row), self.audit_detail(row)), '') for row in rows])
+            replace_rows(widget, [(row['id'], (row['created_at'].replace('T', ' '), action_text(row['action']), row['student_id'] or '', self.actor_text(row), self.audit_detail(row)), '') for row in rows])
             lookup = {str(row['id']): row for row in rows}
 
             def details(event=None):
                 selected = widget.selection()
                 if selected:
                     item = lookup[selected[0]]
-                    self.text_details('操作完整记录', f"操作时间：{item['created_at']}\n操作：{item['action']}\n课次：{item['session_id']}\n学号：{item['student_id'] or '无'}\n{self.actor_text(item)}\n{self.audit_detail(item)}\n\n修改前：\n{self.snapshot_text(item['before_json'])}\n\n修改后：\n{self.snapshot_text(item['after_json'])}")
+                    self.text_details('操作完整记录', f"操作时间：{item['created_at']}\n操作：{action_text(item['action'])}\n课次：{item['session_id']}\n学号：{item['student_id'] or '无'}\n{self.actor_text(item)}\n{self.audit_detail(item)}\n\n修改前：\n{self.snapshot_text(item['before_json'])}\n\n修改后：\n{self.snapshot_text(item['after_json'])}")
             widget.bind('<Double-1>', details)
         yield from show()
 
     def build_settings(self):
-        page = self.pages['settings']
+        self.settings_scroll = ScrollableFrame(self.pages['settings'])
+        self.settings_scroll.pack(fill='both', expand=True)
+        page = self.settings_scroll.body
+        label(page, '运行数据目录', size=15, bold=True).pack(anchor='w', pady=(4,8))
+        label(page, str(DATA_DIR), size=9, color=MUTED, wraplength=800, justify='left').pack(anchor='w')
+        self.storage_status = label(page, '正在读取恢复验证状态…', size=9, color=MUTED)
+        self.storage_status.pack(anchor='w', pady=(8,20))
+        button(page, '首次使用向导 / 重新检查', self.open_setup, plain=True).pack(anchor='w', pady=(0, 18))
         label(page, '数据备份', size=15, bold=True).pack(anchor='w', pady=(4, 10))
         label(page, '备份包含学生、课次、签到记录、操作记录、模型与人脸样本。', size=10, color=MUTED).pack(anchor='w')
         backup = button(page, '保存完整备份', self.backup, primary=True)
         backup.pack(anchor='w', pady=(18, 30))
         self.task_buttons.append(backup)
+        self.automatic_backup = AutomaticBackupPanel(self, page)
+        button(page, '校验 / 恢复备份', self.open_recovery).pack(anchor='w', pady=(0,12))
+        label(page, '恢复使用独立窗口；需关闭所有签到窗口，复核当前管理密码，原数据会先保留为快照。', size=9, color=MUTED, wraplength=800, justify='left').pack(anchor='w', pady=(0,20))
         ttk.Separator(page).pack(fill='x', pady=(0, 25))
         label(page, '摄像头设置', size=15, bold=True).pack(anchor='w', pady=(0, 8))
         label(page, '默认编号为 0；连接外置摄像头时可尝试 1 或 2。修改前请停止相机。', size=10, color=MUTED).pack(anchor='w')
@@ -900,8 +1072,35 @@ class AdminApp(BaseWindow):
         label(page,'删除样本需复核管理密码并二次确认；不删除名单、考勤时间证据。\n历史备份中的人脸副本需另外清理。',size=9,color=MUTED).pack(anchor='w')
         button(page, '退出管理', self.close, plain=True).pack(anchor='w', pady=18)
 
+    def open_setup(self):
+        if self.setup_dialog and not self.setup_dialog.closed:
+            self.setup_dialog.root.lift()
+            return
+        if self.busy or self.automatic_backup.running or (self.capture_dialog and self.capture_dialog.window.winfo_exists()):
+            self.say('请先完成后台任务或人脸采集，再打开使用向导。')
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        placeholder = tk.Frame(dialog)
+        placeholder.pack(fill='both', expand=True)
+
+        def completed(target):
+            self.notebook.select(self.pages[target])
+            self.refresh_students()
+            self.refresh_sessions()
+            self.say('使用向导已完成；人工开课无需模型，刷脸签到需先采集并训练。')
+            dialog.destroy()
+
+        try:
+            self.setup_dialog = switch_view(dialog, placeholder,
+                lambda: FirstUseWizard(dialog, self.store, completed, async_io=self.async_io, manual=True))
+        except Exception as error:
+            dialog.destroy()
+            self.handle_error(error)
+
     def change_management_password(self):
-        dialog=tk.Toplevel(self.root); dialog.title('修改管理密码'); dialog.geometry('520x430')
+        dialog=tk.Toplevel(self.root); dialog.title('修改管理密码'); fit_window(dialog,'520x430',minimum=(500,420))
         dialog.transient(self.root); dialog.grab_set()
         form=tk.Frame(dialog); form.pack(fill='both',expand=True,padx=24,pady=20); form.columnconfigure(0,weight=1)
         old=tk.StringVar(); new=tk.StringVar(); confirm=tk.StringVar()
@@ -924,7 +1123,7 @@ class AdminApp(BaseWindow):
         student=self.selected_student
         if not clear_all and not student:
             self.say('请先在学生页选择学生'); return
-        dialog=tk.Toplevel(self.root); dialog.title('删除人脸资料'); dialog.geometry('600x390')
+        dialog=tk.Toplevel(self.root); dialog.title('删除人脸资料'); fit_window(dialog,'600x390',minimum=(540,380))
         dialog.transient(self.root); dialog.grab_set()
         form=tk.Frame(dialog); form.pack(fill='both',expand=True,padx=24,pady=20); form.columnconfigure(0,weight=1)
         label(form,'清空所有人脸训练数据' if clear_all else f"删除 {student['name']} 的人脸样本",size=15,bold=True).grid(row=0,column=0,sticky='w')
@@ -933,14 +1132,22 @@ class AdminApp(BaseWindow):
         entry_field(form,'重新输入管理密码',password,2,show='●')
         @self.flow
         def remove():
+            if self.busy:
+                self.say('请先等待后台任务完成')
+                return
             if not messagebox.askyesno('再次确认删除','确认删除上述人脸训练数据？\n请先停止所有相机、采集和训练。',parent=dialog): return
             credentials=password.get(); password.set('')
             try:
-                count=yield IO(partial(delete_face_data,self.store,credentials,None if clear_all else student['student_id'],clear_all=clear_all))
+                timeouts = yield IO(MaintenanceService(self.store).timeouts)
             except Exception as error:
                 messagebox.showerror('删除未完成',user_message(error),parent=dialog); return
-            dialog.destroy(); self.say(f'已删除 {count} 张样本，模型已重建或清空')
-            yield from self.refresh_students()
+            def completed(count):
+                if dialog.winfo_exists():
+                    dialog.destroy()
+                self.say(f'已删除 {count} 张样本，模型已重建或清空')
+                self.refresh_students()
+            self.run_job('删除人脸资料并更新模型', partial(delete_face_data,self.store,credentials,None if clear_all else student['student_id'],clear_all=clear_all),
+                         done=completed, timeout=timeouts['training'])
         button(form,'确认删除并更新模型',remove,primary=True).grid(row=4,column=0,pady=20,sticky='e')
 
     @ui_flow
@@ -954,23 +1161,50 @@ class AdminApp(BaseWindow):
         self.say('摄像头编号已保存，下次开启相机时生效')
 
     def backup(self):
+        if self.busy or self.automatic_backup.running:
+            self.say('请等待当前后台任务完成后再备份')
+            return
         if not messagebox.askyesno('备份含敏感数据','备份包含名单、人脸样本、模型和口令摘要。\n请保存在受保护位置并加密保存。是否继续？',parent=self.root):
             return
         path = filedialog.asksaveasfilename(parent=self.root, title='保存完整备份', initialfile='课堂签到备份_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.zip', defaultextension='.zip', filetypes=[('备份压缩包', '*.zip')])
         if path:
             store=self.store
             def work():
-                with ResourceLease(DATA_LOCK_PATH, '正在采集或训练，请完成后再备份。'):
-                    store.backup_archive(path)
-            self.run_job('备份数据', work)
+                store.backup_archive(path)
+            self.run_job('备份数据', work, done=lambda result: self.dashboard.refresh(), timeout=BACKUP_TIMEOUT)
+
+    @ui_flow
+    def load_storage_info(self):
+        def read_status():
+            path = DATA_DIR / 'restore_status.json'
+            try:
+                return json.loads(path.read_text(encoding='utf-8')).get('verified_at', '') if path.exists() else ''
+            except (OSError, ValueError, AttributeError):
+                return ''
+        verified = yield IO(read_status)
+        self.storage_status.configure(text='最近成功恢复验证：' + (verified.replace('T',' ') if verified else '尚无记录'))
+
+    def open_recovery(self):
+        if self.busy or self.automatic_backup.running or self._running_flows or (self.capture_dialog and self.capture_dialog.window.winfo_exists()):
+            self.say('请先完成当前任务或采集，再打开恢复入口')
+            return
+        if messagebox.askyesno('打开备份恢复', '将关闭教师端并打开独立恢复窗口。\n请同时关闭学生端和其他签到窗口。恢复前将保留原数据。是否继续？', parent=self.root):
+            try:
+                launch_script('recovery_app.py')
+            except OSError as error:
+                self.handle_error(error)
+                return
+            self.close()
 
     @ui_flow
     def tick(self):
         try:
-            yield from self.refresh_sessions()
+            yield from self.refresh_sessions(refresh_records=False)
             if self.refresh_error:
                 self.say('课次数据已恢复')
                 self.refresh_error = False
+            if self.notebook.select() == str(self.pages['records']):
+                self.schedule(0, self.refresh_records)
         except sqlite3.Error as error:
             log_error('admin_refresh_failed',error)
             self.refresh_error = True
@@ -979,16 +1213,59 @@ class AdminApp(BaseWindow):
             self.schedule(3000, self.tick)
 
     def close(self):
+        if self.maintenance.dialog and not self.maintenance.dialog.closed and not self.maintenance.dialog.close():
+            self.say('正在等待维护窗口释放摄像头或保存设置，请稍后退出')
+            return False
+        if self.automatic_backup.running and self.automatic_backup.kind == 'backup':
+            self.automatic_backup.cancel()
+            self.say('已请求取消自动备份，请等待当前步骤结束后再退出')
+            return False
+        if self.setup_dialog and not self.setup_dialog.closed and not self.setup_dialog.close():
+            self.say('使用向导正在保存进度或释放摄像头，完成后可退出')
+            return False
+        if self.review_dialog and not self.review_dialog.closed:
+            if self.review_dialog.busy:
+                self.say('课后核对正在处理数据，请等待完成后退出')
+                return
+            self.review_dialog.close()
+        if self.schedule_dialog and not self.schedule_dialog.closed:
+            if self.schedule_dialog.busy:
+                self.say('周期课次正在处理数据，请等待完成后退出')
+                return
+            self.schedule_dialog.close()
+        if self.manual_dialog and not self.manual_dialog.closed:
+            if self.manual_dialog.busy:
+                self.say('人工点名正在处理数据，请等待完成后再退出')
+                return
+            self.manual_dialog.close()
         if self.capture_dialog and self.capture_dialog.window.winfo_exists():
             self.capture_dialog.stop()
-        return super().close()
+            self.say('正在等待采集释放摄像头，请稍后退出')
+            return False
+        self.dashboard.cancel_flows()
+        self.reports.cancel_flows()
+        self.lifecycle.cancel_flows()
+        closed = super().close()
+        if closed:
+            self.maintenance.close()
+            self.dashboard.closed = True
+            self.reports.closed = True
+            self.lifecycle.closed = True
+            self.automatic_backup.close()
+        return closed
+
+_SETUP_UNCHECKED = object()
+
 
 class AdminLogin(FlowHost):
 
-    def __init__(self, root, store=None, async_io=True, clock=None):
+    def __init__(self, root, store=None, async_io=True, clock=None, onboarding=False, setup_progress=_SETUP_UNCHECKED):
         self.init_flows(root,async_io)
         self.root, self.store = (root, store or AttendanceStore())
         self.clock = clock or datetime.now
+        self.onboarding = onboarding
+        self._setup_checked = setup_progress is not _SETUP_UNCHECKED
+        self.setup_progress = setup_progress if self._setup_checked else None
         self.auth_status = None
         self.submitting = False
         self.login_complete = False
@@ -998,8 +1275,7 @@ class AdminLogin(FlowHost):
         self.security_hint = tk.StringVar()
         setup_theme(root)
         root.title('教师管理 · 登录')
-        root.geometry('520x550')
-        root.minsize(500, 520)
+        fit_window(root, '520x550', minimum=(500, 520))
         self.error=tk.StringVar(value='正在检查管理入口…')
         self.loader=tk.Frame(root); self.loader.pack(fill='both',expand=True,padx=25,pady=25)
         tk.Label(self.loader,textvariable=self.error,wraplength=430).pack(pady=25)
@@ -1032,6 +1308,9 @@ class AdminLogin(FlowHost):
 
     @ui_flow
     def check_login(self):
+        if self.onboarding and not self._setup_checked:
+            self.setup_progress = yield IO(FirstUseService(self.store).prepare)
+            self._setup_checked = True
         self.is_setup = not (yield IO(self.store.admin_exists))
         self.build_form()
         if not self.is_setup:
@@ -1039,14 +1318,24 @@ class AdminLogin(FlowHost):
 
     def build_form(self):
         root=self.root
-        self.loader.destroy()
+        continuing_setup = bool(self.setup_progress and not self.setup_progress['completed'])
+        if continuing_setup:
+            fit_window(root, '620x650', minimum=(560, 540))
+        self.stop_login_feedback()
+        if self.loader.winfo_exists():
+            self.loader.destroy()
+        if hasattr(self, 'frame') and self.frame.winfo_exists():
+            self.frame.destroy()
         self.frame = panel(root)
         self.frame.pack(fill='both', expand=True, padx=30, pady=30)
         inner = tk.Frame(self.frame, bg=WHITE)
         inner.pack(fill='both', expand=True, padx=30, pady=30)
         inner.columnconfigure(0, weight=1)
         label(inner, '设置管理密码' if self.is_setup else '登录教师管理', size=22, bold=True).grid(row=0, column=0, sticky='w', pady=(0, 10))
-        label(inner, '首次使用请设置密码，学生端不需要此密码。' if self.is_setup else '采集、训练、课次与考勤管理仅在此入口提供。', size=9, color=MUTED, wraplength=360, justify='left').grid(row=1, column=0, sticky='w', pady=(0, 15))
+        introduction = ('首次使用向导 · 2/5 管理密码\n数据位置已确认：' + str(self.store.path.parent) + '\n设置后继续摄像头测试和名单导入。' if self.is_setup else
+                        '验证管理密码后，继续上次未完成的首次使用向导。') if continuing_setup else (
+                        '首次使用请设置密码，学生端不需要此密码。' if self.is_setup else '采集、训练、课次与考勤管理仅在此入口提供。')
+        label(inner, introduction, size=9, color=MUTED, wraplength=430 if continuing_setup else 360, justify='left').grid(row=1, column=0, sticky='w', pady=(0, 15))
         self.password = tk.StringVar()
         self.confirm = tk.StringVar()
         self.error = tk.StringVar()
@@ -1120,6 +1409,7 @@ class AdminLogin(FlowHost):
             self.lock_feedback = True
             return
         self.submitting = True
+        password_created = False
         self.auth_revision += 1
         self.render_login_feedback()
         try:
@@ -1127,6 +1417,7 @@ class AdminLogin(FlowHost):
                 if self.password.get() != self.confirm.get():
                     raise ValueError('两次输入的密码不一致。')
                 yield IO(partial(self.store.setup_admin,self.password.get()))
+                password_created = True
             else:
                 result = yield IO(partial(self.store.authenticate_with_status, self.password.get(), self.clock()))
                 self.auth_status = result
@@ -1137,20 +1428,36 @@ class AdminLogin(FlowHost):
                     return
             self.password.set('')
             self.confirm.set('')
-            self.root.unbind('<Return>')
+            progress = self.setup_progress if self.onboarding else None
+            def create():
+                self.root.unbind('<Return>')
+                if progress and not progress['completed']:
+                    return FirstUseWizard(self.root, self.store, self.open_management, async_io=self.async_io)
+                return self.open_management()
+            self.application = switch_view(self.root, self.frame, create)
             self.login_complete = True
             self.stop_login_feedback()
-            self.frame.destroy()
-            self.application = AdminApp(self.root, self.store, authenticated=True,async_io=self.async_io)
         except Exception as error:
+            if password_created:
+                self.is_setup = False
+                self.build_form()
+                self.status_timer = self.schedule(0, self.refresh_login_status)
             self.handle_error(error)
         finally:
             self.submitting = False
             if not self.login_complete:
                 self.render_login_feedback()
 
+    def open_management(self, target='home'):
+        application = AdminApp(self.root, self.store, authenticated=True, async_io=self.async_io)
+        application.notebook.select(application.pages[target])
+        self.application = application
+        return application
+
 def main():
     from app_startup import launch_entry
-    launch_entry(lambda root,store:AdminLogin(root,store))
+    launch_entry(lambda root,store:AdminLogin(root,store,onboarding=True), role='admin')
 if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()
