@@ -21,7 +21,6 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
-      CLASSROOM_DATA_DIR: ${{ runner.temp }}/classroom-unittest-data
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -42,4 +41,6 @@ jobs:
         run: python -c "import tkinter as tk; r = tk.Tk(); r.withdraw(); r.destroy(); print('Tk OK')"
 
       - name: Run unit tests
+        env:
+          CLASSROOM_DATA_DIR: ${{ runner.temp }}/classroom-unittest-data
         run: python -m unittest discover -s tests -v
