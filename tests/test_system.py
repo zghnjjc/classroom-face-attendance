@@ -11,12 +11,12 @@ from unittest.mock import patch
 import numpy as np
 from openpyxl import load_workbook
 
-from attendance_store import AttendanceStore, read_student_import
+from classroom_attendance.storage.attendance_store import AttendanceStore, read_student_import
 from _face_test_support import authorize_faces
-from camera_service import RecognitionStreak, quality_hint
-from face_utils import load_classifier, load_recognizer, read_gray, save_gray
-from resource_lock import ResourceLease
-from train import model_health, preprocess, train_model
+from classroom_attendance.camera.camera_service import RecognitionStreak, quality_hint
+from classroom_attendance.faces.face_utils import load_classifier, load_recognizer, read_gray, save_gray
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.faces.train import model_health, preprocess, train_model
 
 
 class StoreTests(unittest.TestCase):

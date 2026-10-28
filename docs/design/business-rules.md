@@ -1,7 +1,7 @@
 # 业务规则 / Business Rules
 
 > 本文档描述考勤系统的数据与业务规则，面向维护者与部署者。界面文案可能更简短，但以后端规则为准。
-> 规则实现主要位于 `attendance_store.py`、`attendance_filters.py` 与 `camera_service.py`。
+> 规则实现主要位于 `classroom_attendance/storage/attendance_store.py`、`classroom_attendance/attendance/attendance_filters.py` 与 `classroom_attendance/camera/camera_service.py`。
 
 ## 1. 术语
 

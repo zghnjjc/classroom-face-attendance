@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from face_lifecycle import FaceLifecycleService
+from classroom_attendance.faces.face_lifecycle import FaceLifecycleService
 
 
 def authorize_faces(store):

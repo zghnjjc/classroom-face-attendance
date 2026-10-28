@@ -17,17 +17,17 @@ from unittest.mock import patch
 import numpy as np
 
 from app_entry import role_command
-from app_errors import BusyError, ValidationError
-from attendance_store import AttendanceStore
+from classroom_attendance.core.app_errors import BusyError, ValidationError
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from backup_service import (JOURNAL_NAME, MANAGED_NAMES, create_backup, database_summary,
+from classroom_attendance.storage.backup_service import (JOURNAL_NAME, MANAGED_NAMES, create_backup, database_summary,
                             inspect_backup, recover_interrupted, restore_backup, SCHEMA_VERSION)
-from data_migration import migrate_legacy
-from face_utils import save_gray
-from file_integrity import file_sha256
-from recovery_app import RecoveryApp, authorize_restore
-from runtime_guard import InstanceLease, MaintenanceLease
-from train import dataset_signature, manifest_path, model_health, train_model, training_paths
+from classroom_attendance.storage.data_migration import migrate_legacy
+from classroom_attendance.faces.face_utils import save_gray
+from classroom_attendance.core.file_integrity import file_sha256
+from classroom_attendance.storage.recovery_app import RecoveryApp, authorize_restore
+from classroom_attendance.core.runtime_guard import InstanceLease, MaintenanceLease
+from classroom_attendance.faces.train import dataset_signature, manifest_path, model_health, train_model, training_paths
 
 
 def hold_instance(directory, pipe):
@@ -89,18 +89,18 @@ class DeploymentTests(unittest.TestCase):
             role_command("arbitrary-script", self.target)
 
     def test_chosen_data_directory_is_saved_and_environment_takes_priority(self):
-        from app_config import configured_data_dir, save_data_location
-        with patch('app_config.default_data_dir',return_value=self.folder / 'settings'), patch('app_config.PROGRAM_DIR', self.folder / 'program'), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
+        from classroom_attendance.core.app_config import configured_data_dir, save_data_location
+        with patch('classroom_attendance.core.app_config.default_data_dir',return_value=self.folder / 'settings'), patch('classroom_attendance.core.app_config.PROGRAM_DIR', self.folder / 'program'), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
             save_data_location(self.target)
             self.assertEqual(configured_data_dir(),self.target)
             with patch.dict(os.environ,{'CLASSROOM_DATA_DIR':str(self.source)}):
                 self.assertEqual(configured_data_dir(),self.source)
 
     def test_invalid_saved_directory_is_rejected_instead_of_opening_empty_default(self):
-        from app_config import configured_data_dir
+        from classroom_attendance.core.app_config import configured_data_dir
         preference = self.folder / 'data_location.json'
         preference.write_text('{broken',encoding='utf-8')
-        with patch('app_config.default_data_dir',return_value=self.folder), patch('app_config.PROGRAM_DIR', self.folder / 'program'), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
+        with patch('classroom_attendance.core.app_config.default_data_dir',return_value=self.folder), patch('classroom_attendance.core.app_config.PROGRAM_DIR', self.folder / 'program'), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
             with self.assertRaises(ValueError):
                 configured_data_dir()
 
@@ -112,9 +112,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(model_health(model=self.model, dataset=self.dataset, manifest_file=self.manifest)[0])
 
     def test_file_hash_cache_reuses_reads_and_changes_invalidate_cache(self):
-        from file_integrity import _read_hash
+        from classroom_attendance.core.file_integrity import _read_hash
         sample = self.dataset / "001.0.jpg"
-        with patch("file_integrity._read_hash", wraps=_read_hash) as reader:
+        with patch("classroom_attendance.core.file_integrity._read_hash", wraps=_read_hash) as reader:
             file_sha256(sample)
             file_sha256(sample)
             self.assertEqual(reader.call_count, 1)
@@ -139,8 +139,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(database_summary(self.target / "attendance.db")["students"], 1)
         self.assertTrue(model_health(model=self.target / "face_model.yml", dataset=self.target / "dataset",
                                     manifest_file=self.target / "model_manifest.json", fresh=True)[0])
-        from face_utils import load_recognizer, read_gray
-        from train import preprocess
+        from classroom_attendance.faces.face_utils import load_recognizer, read_gray
+        from classroom_attendance.faces.train import preprocess
         recognizer = load_recognizer(self.target / 'face_model.yml')
         label, distance = recognizer.predict(preprocess(read_gray(self.target / 'dataset' / '001.0.jpg')))
         self.assertEqual(recognizer.getLabelInfo(label),'001')
@@ -192,10 +192,10 @@ class DeploymentTests(unittest.TestCase):
             inspect_backup(self.archive)
 
     def test_legacy_directory_is_not_silently_bypassed_by_new_default(self):
-        from app_startup import checked_store
-        from data_migration import LegacyDataFound
-        with patch('app_startup.DATABASE_PATH',self.target / 'attendance.db'), patch('app_startup.PROGRAM_DIR',self.source), \
-                patch('app_startup.HAS_DATA_LOCATION_PREFERENCE',False), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
+        from classroom_attendance.core.app_startup import checked_store
+        from classroom_attendance.storage.data_migration import LegacyDataFound
+        with patch('classroom_attendance.core.app_startup.DATABASE_PATH',self.target / 'attendance.db'), patch('classroom_attendance.core.app_startup.PROGRAM_DIR',self.source), \
+                patch('classroom_attendance.core.app_startup.HAS_DATA_LOCATION_PREFERENCE',False), patch.dict(os.environ,{'CLASSROOM_DATA_DIR':''}):
             with self.assertRaises(LegacyDataFound):
                 checked_store()
         self.assertFalse((self.target / 'attendance.db').exists())
@@ -391,7 +391,7 @@ class DeploymentTests(unittest.TestCase):
         authorize_restore(self.target,"",allow_damaged=True)
 
     def test_offline_password_reset_refuses_active_program_instances(self):
-        from reset_admin import reset_admin
+        from classroom_attendance.maintenance.reset_admin import reset_admin
         self.store.setup_admin('example-password-2026')
         with InstanceLease(self.source):
             with self.assertRaises(BusyError):
@@ -421,7 +421,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_recovery_ui_requires_verified_backup_and_confirmation(self):
         root, app = self.recovery_window()
-        with patch('recovery_app.restore_backup') as restore:
+        with patch('classroom_attendance.storage.recovery_app.restore_backup') as restore:
             app.restore()
             self.backup()
             app.checked(inspect_backup(self.archive))
@@ -436,8 +436,8 @@ class DeploymentTests(unittest.TestCase):
         app.checked(inspect_backup(self.archive))
         app.confirmed.set(True)
         app.password.set('example-password-2026')
-        with patch('recovery_app.restore_backup',return_value={'previous_snapshot':str(self.folder / 'previous'),'model_ready':True}), \
-                patch('recovery_app.messagebox.showinfo'):
+        with patch('classroom_attendance.storage.recovery_app.restore_backup',return_value={'previous_snapshot':str(self.folder / 'previous'),'model_ready':True}), \
+                patch('classroom_attendance.storage.recovery_app.messagebox.showinfo'):
             app.restore()
             self.assertEqual(app.password.get(),'')
             self.wait_for_restore(root,app)
@@ -451,8 +451,8 @@ class DeploymentTests(unittest.TestCase):
         app.source.set(str(self.archive))
         app.checked(inspect_backup(self.archive))
         app.confirmed.set(True)
-        with patch('recovery_app.restore_backup',side_effect=BusyError('请关闭其他窗口')), \
-                patch('recovery_app.messagebox.showerror') as error:
+        with patch('classroom_attendance.storage.recovery_app.restore_backup',side_effect=BusyError('请关闭其他窗口')), \
+                patch('classroom_attendance.storage.recovery_app.messagebox.showerror') as error:
             app.restore()
             self.wait_for_restore(root,app)
         self.assertFalse(app.busy)

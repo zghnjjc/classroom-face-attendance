@@ -2,7 +2,7 @@
 
 - 本项目代码以 **MIT License** 发布，见 [LICENSE](../LICENSE)。
   版权行为 `Copyright (c) 2026 Classroom Face Attendance contributors`。
-- 第三方组件与数据文件许可见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)，其中包含仓库再分发的 Haar 级联 `haarcascade_frontalface_default.xml` 的 Intel License Agreement 原文、来源与 SHA-256。
+- 第三方组件与数据文件许可见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)，其中包含仓库再分发的 Haar 级联 `resources/haarcascade_frontalface_default.xml` 的 Intel License Agreement 原文、来源与 SHA-256。
 - 运行依赖：`opencv-contrib-python 4.14.0.94`（Apache-2.0）、`numpy 2.4.6`（BSD-3-Clause 等复合许可）、`openpyxl 3.1.5`（MIT）、`et_xmlfile 2.0.0`（MIT）。源码运行由用户准备 Python；解压发行包附带所需运行时及许可文本。
 - 设计思路参考（未复制代码或模型）：
   - [SmartAttend](https://github.com/mitraboga/SmartAttend/)：角色分工、课程课次与考勤时段。

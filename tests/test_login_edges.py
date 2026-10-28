@@ -8,11 +8,11 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, Mock, patch
 
 import test_first_use
-from admin_app import AdminApp, AdminLogin
-from app_startup import StartupController
-from first_use import FirstUseService, SETUP_KEY
-from first_use_ui import FirstUseWizard
-from GUI import InitialLauncher, Launcher
+from classroom_attendance.ui.admin_app import AdminApp, AdminLogin
+from classroom_attendance.core.app_startup import StartupController
+from classroom_attendance.onboarding.first_use import FirstUseService, SETUP_KEY
+from classroom_attendance.onboarding.first_use_ui import FirstUseWizard
+from classroom_attendance.ui.launcher import InitialLauncher, Launcher
 
 
 class PreparationEdges(test_first_use.SetupFixture):
@@ -74,7 +74,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         super().setUp()
         self.root = tk.Tk()
         self.bad_callbacks = []
-        self.messagebox = patch('ui_common.messagebox.showerror').start()
+        self.messagebox = patch('classroom_attendance.ui.ui_common.messagebox.showerror').start()
         self.addCleanup(patch.stopall)
         self.addCleanup(self.cleanup_root)
 
@@ -136,7 +136,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         self.complete()
         before = self.raw_progress()
         wizard = self.wizard(manual=True)
-        with patch('first_use_ui.messagebox.askyesno', return_value=False):
+        with patch('classroom_attendance.onboarding.first_use_ui.messagebox.askyesno', return_value=False):
             wizard.restart()
         self.assertTrue(wizard.reviewing)
         self.assertEqual(self.raw_progress(), before)
@@ -144,7 +144,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
     def test_confirmed_restart_creates_resumable_steps_and_keeps_password(self):
         self.complete()
         wizard = self.wizard(manual=True)
-        with patch('first_use_ui.messagebox.askyesno', return_value=True):
+        with patch('classroom_attendance.onboarding.first_use_ui.messagebox.askyesno', return_value=True):
             wizard.restart()
         self.assertFalse(wizard.reviewing)
         self.assertEqual(wizard.page, 'camera')
@@ -180,7 +180,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
 
     def test_launcher_passes_known_progress_to_login_without_second_prepare(self):
         original = FirstUseService.prepare
-        with patch('first_use.FirstUseService.prepare', autospec=True, side_effect=original) as prepare:
+        with patch('classroom_attendance.onboarding.first_use.FirstUseService.prepare', autospec=True, side_effect=original) as prepare:
             gate = InitialLauncher(self.root, self.store, async_io=False)
         self.assertIsInstance(gate.application, AdminLogin)
         self.assertEqual(prepare.call_count, 1)
@@ -206,7 +206,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         return_binding = self.root.bind('<Return>')
         close_binding = self.root.protocol('WM_DELETE_WINDOW')
         login.password.set(test_first_use.PASSWORD)
-        with patch('admin_app.AdminApp', side_effect=self.fail_partial):
+        with patch('classroom_attendance.ui.admin_app.AdminApp', side_effect=self.fail_partial):
             login.submit()
         self.root.update()
         self.assertFalse(login.login_complete)
@@ -225,7 +225,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         login = AdminLogin(self.root, self.store, async_io=False, onboarding=True)
         login.password.set(test_first_use.PASSWORD)
         login.confirm.set(test_first_use.PASSWORD)
-        with patch('admin_app.FirstUseWizard', side_effect=self.fail_partial):
+        with patch('classroom_attendance.ui.admin_app.FirstUseWizard', side_effect=self.fail_partial):
             login.submit()
         self.root.update()
         self.assertFalse(login.login_complete)
@@ -265,7 +265,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         self.assertEqual(sum(row['action'] == '完成首次使用向导' for row in self.store.audit_rows()), 1)
 
     def test_initial_launcher_construction_failure_keeps_retry_page(self):
-        with patch('admin_app.AdminLogin', side_effect=self.fail_partial):
+        with patch('classroom_attendance.ui.admin_app.AdminLogin', side_effect=self.fail_partial):
             gate = InitialLauncher(self.root, self.store, async_io=False)
         self.root.update()
         self.assertFalse(gate.closed)
@@ -297,7 +297,7 @@ class LoginAndWizardEdges(test_first_use.SetupFixture):
         self.store.setup_admin(test_first_use.PASSWORD)
         admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         children = set(self.root.winfo_children())
-        with patch('admin_app.FirstUseWizard', side_effect=self.fail_partial):
+        with patch('classroom_attendance.ui.admin_app.FirstUseWizard', side_effect=self.fail_partial):
             admin.open_setup()
         self.root.update()
         self.assertEqual(set(self.root.winfo_children()), children)

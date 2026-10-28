@@ -4,7 +4,7 @@
 
 本版本提供 Windows x64 解压发行包。使用者无需安装 Python；构建发行包的开发者需要 Python 3.11。下载与安装构建依赖需要网络，发行包日常运行不需要网络。
 
-源码目录和新构建的发行包均不提供 `.bat` 启动器。本机源码运行使用 `tools/create_shortcuts.ps1` 生成的三个桌面快捷方式；发行包直接双击 `ClassroomAttendance.exe`，保留完整的 `_internal/` 目录。
+源码根目录保持单一 `app_entry.py` 入口；可选的旧 BAT 集中在 `tools/launchers/`，不加入新构建的发行包。本机源码运行使用 `tools/create_shortcuts.ps1` 生成的三个桌面快捷方式；发行包直接双击 `ClassroomAttendance.exe`，保留完整的 `_internal/` 目录。
 
 ## 使用发行包
 

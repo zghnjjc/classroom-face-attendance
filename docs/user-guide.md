@@ -22,7 +22,7 @@
 
 点击“稍后继续”或关闭窗口后，已确认步骤随数据库保存；下次登录继续未完成步骤。已完成向导和已有密码/业务数据的旧用户不自动重复引导；在“数据与设置 → 首次使用向导 / 重新检查”打开设置复核时保持原进度，直接关闭不会要求下次登录重新走向导。需要重做时，点击复核页的“重新开始向导”并确认，才将摄像头和名单步骤重置为未完成；密码、名单和考勤保留。向导进度随完整备份恢复，未完成进度换目录后重新测试摄像头。学生入口保持签到功能，不展示管理向导。
 
-- 首次启动会自动创建空数据库；初始化种子文件 `initial_data.json` 为空模板，不会导入示例学生。
+- 首次启动会自动创建空数据库；初始化种子文件 `resources/initial_data.json` 为空模板，不会导入示例学生。
 - 学生端在老师开启课次后才会允许开始识别；模型尚未训练时，学生端会提示联系老师。
 - 依赖分工：`requirements.txt` 是用户统一安装入口，引用 `requirements-lock.txt` 中的固定版本；CI 直接使用同一锁文件。`requirements-build.txt` 仅用于构建 EXE，日常运行无需安装。升级依赖时集中修改锁文件并验证。
 - 不要同时安装多个共用 `cv2` 命名空间的 OpenCV 发行包；本项目需要 `opencv-contrib-python`（含 face 模块）。
@@ -168,7 +168,7 @@
 | `.camera.lock`、`.samples.lock` | 运行期资源锁文件，程序退出后失效 |
 | `.maintenance.lock`、`.instances/` | 恢复维护互斥与运行窗口登记 |
 | `restore_status.json`、`backups/pre_restore_*` | 最近恢复验证结果、恢复前原始快照及可用原库的 ZIP |
-| `initial_data.json` | 空初始化种子（仓库内只保留空模板） |
+| `resources/initial_data.json` | 空初始化种子（仓库内只保留空模板） |
 
 > 默认运行数据目录为 `%LOCALAPPDATA%\ClassroomFaceAttendance`；界面选择的其他目录会保存供下次启动使用。`--data-dir` 和 `CLASSROOM_DATA_DIR` 可覆盖该设置，命令行优先。程序资源与空种子仍位于程序目录，详细迁移与恢复步骤见 [部署文档](deployment.md)。
 
@@ -189,7 +189,7 @@
 - **忘记管理密码**：发行包可在关闭全部窗口后运行 `./ClassroomAttendance.exe --reset-admin`，在本机对话框中确认；源码也可在仓库根目录执行（自定义目录请替换参数）：
 
   ```powershell
-  ./.venv/Scripts/python.exe reset_admin.py --data-dir "$env:LOCALAPPDATA\ClassroomFaceAttendance" --confirm-reset
+  ./.venv/Scripts/python.exe -m classroom_attendance.maintenance.reset_admin --data-dir "$env:LOCALAPPDATA\ClassroomFaceAttendance" --confirm-reset
   ```
 
   脚本会先把当前数据库备份为 `password_reset_<时间戳>.db`，再删除管理密码摘要；下次进入教师端需重新设置密码。
@@ -224,7 +224,7 @@ A：同一台电脑上采集与签到共用相机锁。先停止学生端识别�
 A：完成或补采样本后点击“更新识别模型”。手动增删改样本、混用不同批次模型与样本、模型损坏时需要重新训练；新版备份正常恢复且内容校验通过时可继续使用模型。停用学生不需要重新训练。
 
 **Q：忘记管理密码怎么办？**
-A：关闭全部程序，发行包运行 `./ClassroomAttendance.exe --reset-admin` 并在本机对话框中确认；源码使用 `reset_admin.py --data-dir <实际数据目录> --confirm-reset`。操作先备份数据库，再清除密码摘要；下次进入管理端重新设置密码。
+A：关闭全部程序，发行包运行 `./ClassroomAttendance.exe --reset-admin` 并在本机对话框中确认；源码在项目根目录使用 `python -m classroom_attendance.maintenance.reset_admin --data-dir <实际数据目录> --confirm-reset`。操作先备份数据库，再清除密码摘要；下次进入管理端重新设置密码。
 
 **Q：学生停用后有什么影响？**
 A：停用只禁止后续人脸签到，并使该生默认不进入新课次名单；既有课次的应到名单不变。停用不会让其他学生的模型失效；重新启用但尚无模型覆盖的学生会提示需要训练或人工补签。

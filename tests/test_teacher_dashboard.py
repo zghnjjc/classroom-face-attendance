@@ -11,11 +11,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from backup_service import create_backup, inspect_backup, restore_backup
-from teacher_dashboard import BACKUP_KEY, REVIEW_PREFIX
+from classroom_attendance.storage.backup_service import create_backup, inspect_backup, restore_backup
+from classroom_attendance.dashboard.teacher_dashboard import BACKUP_KEY, REVIEW_PREFIX
 
 
 class DashboardFixture(unittest.TestCase):
@@ -205,7 +205,7 @@ class TeacherDashboardTests(DashboardFixture):
         self.assertEqual(self.store.teacher_dashboard()['pending_review_count'], 0)
 
     def test_backup_success_only_after_archive_created(self):
-        with patch('backup_service.create_backup', side_effect=OSError('failed')), self.assertRaises(OSError):
+        with patch('classroom_attendance.storage.backup_service.create_backup', side_effect=OSError('failed')), self.assertRaises(OSError):
             self.store.backup_archive(self.folder/'failed.zip')
         self.assertIsNone(self.store.last_backup())
         self.store.backup_archive(self.folder/'success.zip')
@@ -228,11 +228,11 @@ class TeacherDashboardGuiTests(DashboardFixture):
     def setUp(self):
         super().setUp()
         self.root = tk.Tk()
-        self.errors = patch('dashboard_ui.messagebox.showerror').start()
+        self.errors = patch('classroom_attendance.dashboard.dashboard_ui.messagebox.showerror').start()
         self.addCleanup(patch.stopall)
 
     def app(self):
-        with patch('admin_app.model_health', return_value=(False, '模型未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '模型未训练', None)):
             self.admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.root.update()
         return self.admin

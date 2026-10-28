@@ -13,12 +13,12 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from admin_app import AdminApp
-from app_errors import TaskCancelled
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.core.app_errors import TaskCancelled
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from attendance_reports import rate_text
-from task_runtime import TaskControl, current_control
+from classroom_attendance.attendance.attendance_reports import rate_text
+from classroom_attendance.core.task_runtime import TaskControl, current_control
 
 
 class ReportFixture(unittest.TestCase):
@@ -89,7 +89,7 @@ class AttendanceReportTests(ReportFixture):
             @classmethod
             def now(cls, tz=None):
                 return datetime(2026, 10, 24, 12, tzinfo=tz)
-        with patch('attendance_store.datetime', ReportClock):
+        with patch('classroom_attendance.storage.attendance_store.datetime', ReportClock):
             self.mark(session_id, '001', 'present', time_unconfirmed=True)
             self.mark(session_id, '002', 'leave')
         self.assertEqual(self.report()['totals']['expected'], 0)
@@ -315,7 +315,7 @@ class AttendanceReportGuiTests(ReportFixture):
         self.errors = []
         self.root.report_callback_exception = lambda *args: self.errors.append(args)
         self.store.set_semester_dates('2026-10-01', '2026-10-31')
-        with patch('admin_app.model_health', return_value=(False, '未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '未训练', None)):
             self.admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.panel = self.admin.reports
         self.admin.notebook.select(self.admin.pages['reports'])
@@ -340,7 +340,7 @@ class AttendanceReportGuiTests(ReportFixture):
         self.assertEqual(self.panel.snapshot['totals']['expected'], 2)
         self.assertEqual(str(self.panel.export_button['state']), 'normal')
         output = self.folder / 'gui.xlsx'
-        with patch('attendance_reports_ui.filedialog.asksaveasfilename', return_value=str(output)), patch.object(self.admin, 'run_job') as run:
+        with patch('classroom_attendance.attendance.attendance_reports_ui.filedialog.asksaveasfilename', return_value=str(output)), patch.object(self.admin, 'run_job') as run:
             self.panel.export()
         run.call_args.args[1]()
         self.assertTrue(output.is_file())
@@ -359,7 +359,7 @@ class AttendanceReportGuiTests(ReportFixture):
         self.panel.starts_on.set('错误日期')
         self.panel.refresh()
         self.assertIsNone(self.panel.snapshot)
-        with patch('attendance_reports_ui.filedialog.asksaveasfilename') as choose:
+        with patch('classroom_attendance.attendance.attendance_reports_ui.filedialog.asksaveasfilename') as choose:
             self.panel.export()
         choose.assert_not_called()
         self.panel.use_semester()

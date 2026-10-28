@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import app_config
-import app_startup
-from data_migration import LegacyDataFound
+import classroom_attendance.core.app_config as app_config
+import classroom_attendance.core.app_startup as app_startup
+from classroom_attendance.storage.data_migration import LegacyDataFound
 
 
 class StartupPathTests(unittest.TestCase):
@@ -23,8 +23,8 @@ class StartupPathTests(unittest.TestCase):
         self.data = self.folder / 'existing-data'
         self.program.mkdir()
         self.data.mkdir()
-        for context in (patch('app_config.PROGRAM_DIR', self.program),
-                        patch('app_config.default_data_dir', return_value=self.user),
+        for context in (patch('classroom_attendance.core.app_config.PROGRAM_DIR', self.program),
+                        patch('classroom_attendance.core.app_config.default_data_dir', return_value=self.user),
                         patch.dict(os.environ, {'CLASSROOM_DATA_DIR': ''})):
             context.start()
             self.addCleanup(context.stop)
@@ -93,11 +93,11 @@ class StartupPathTests(unittest.TestCase):
 
     def test_legacy_detection_precedes_any_attempt_to_create_default_directory(self):
         (self.program / 'attendance.db').write_bytes(b'synthetic presence marker')
-        with patch('app_startup.PROGRAM_DIR', self.program), \
-                patch('app_startup.DATABASE_PATH', self.user / 'attendance.db'), \
-                patch('app_startup.HAS_DATA_LOCATION_PREFERENCE', False), \
-                patch('app_startup.DATA_DIRECTORY_ERROR', ''), \
-                patch('app_startup.InstanceLease', side_effect=PermissionError()) as lease:
+        with patch('classroom_attendance.core.app_startup.PROGRAM_DIR', self.program), \
+                patch('classroom_attendance.core.app_startup.DATABASE_PATH', self.user / 'attendance.db'), \
+                patch('classroom_attendance.core.app_startup.HAS_DATA_LOCATION_PREFERENCE', False), \
+                patch('classroom_attendance.core.app_startup.DATA_DIRECTORY_ERROR', ''), \
+                patch('classroom_attendance.core.app_startup.InstanceLease', side_effect=PermissionError()) as lease:
             with self.assertRaises(LegacyDataFound):
                 app_startup.checked_store()
         lease.assert_not_called()

@@ -11,12 +11,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
-from backup_service import create_backup, inspect_backup, restore_backup
-from course_schedule import TEMPLATE_PREFIX, expand_course, normalize_course
-from task_runtime import TaskControl, current_control
-from app_errors import TaskCancelled
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.storage.backup_service import create_backup, inspect_backup, restore_backup
+from classroom_attendance.courses.course_schedule import TEMPLATE_PREFIX, expand_course, normalize_course
+from classroom_attendance.core.task_runtime import TaskControl, current_control
+from classroom_attendance.core.app_errors import TaskCancelled
 
 
 class ScheduleFixture(unittest.TestCase):
@@ -239,10 +239,10 @@ class CourseScheduleGuiTests(ScheduleFixture):
     def setUp(self):
         super().setUp()
         self.root = tk.Tk()
-        self.errors = patch('course_schedule_ui.messagebox.showerror').start()
-        self.confirm = patch('course_schedule_ui.messagebox.askyesno', return_value=True).start()
+        self.errors = patch('classroom_attendance.courses.course_schedule_ui.messagebox.showerror').start()
+        self.confirm = patch('classroom_attendance.courses.course_schedule_ui.messagebox.askyesno', return_value=True).start()
         self.addCleanup(patch.stopall)
-        with patch('admin_app.model_health', return_value=(False, '模型未就绪', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '模型未就绪', None)):
             self.app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.app.course.set('数学')
         self.app.session_group.set('一班')

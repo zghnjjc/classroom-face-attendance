@@ -6,6 +6,8 @@
 
 ## 开发环境
 
+修改功能前可先看 [模块导航](docs/modules.md)，其中列出了每个目录的职责、主要文件和对应测试。应用使用 `classroom_attendance` 包组织，跨模块导入和测试 mock 目标均使用完整包名；从根目录运行 `app_entry.py`。
+
 - Windows 10 / 11（主要目标平台；Linux/macOS 未验证）
 - Python **3.11**（开发环境在 3.11.9 验证）
 - Tkinter（python.org 官方安装器自带）
@@ -22,7 +24,7 @@ py -3.11 -m venv .venv
 运行 GUI：
 
 ```powershell
-./.venv/Scripts/python.exe GUI.py
+./.venv/Scripts/python.exe app_entry.py
 ```
 
 ## 运行测试
@@ -35,7 +37,7 @@ py -3.11 -m venv .venv
 
 说明：
 
-- 当前测试套件为 503 项 unittest（24 个测试文件，另有 2 个测试支持文件）；测试使用临时数据库、合成图片与模拟相机，不需要真实人脸、真实摄像头或生产数据库。运行前请把 `CLASSROOM_DATA_DIR` 指向专用临时目录，避免接触日常运行目录。
+- 测试使用临时数据库、合成图片与模拟相机，不需要真实人脸、真实摄像头或生产数据库。运行前请把 `CLASSROOM_DATA_DIR` 指向专用临时目录，避免接触日常运行目录；测试数量以实际发现结果为准。
 - 多数 GUI 测试会创建真实 Tk 根窗口，因此需要桌面图形会话；无头 CI 使用 Windows runner 或 Xvfb。
 - 测试按项目根目录导入模块；不要在子目录中运行。
 - 若修改了依赖版本，请同时更新 `requirements-lock.txt` 并说明原因。

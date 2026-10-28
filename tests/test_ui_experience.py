@@ -10,13 +10,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from GUI import Launcher
-from app_errors import TaskTimeout
-from attendance_store import AttendanceStore
-from student_app import StudentApp
-from task_runtime import checkpoint
-from ui_common import BaseWindow, CameraView, ScrollableFrame, fit_window
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.ui.launcher import Launcher
+from classroom_attendance.core.app_errors import TaskTimeout
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.ui.student_app import StudentApp
+from classroom_attendance.core.task_runtime import checkpoint
+from classroom_attendance.ui.ui_common import BaseWindow, CameraView, ScrollableFrame, fit_window
 
 
 class UiExperienceTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class UiExperienceTests(unittest.TestCase):
         self.store = AttendanceStore(Path(self.temporary.name) / "test.db", seed_path=None)
         self.store.save_student("001", "测试同学", "测试班")
         self.root = tk.Tk()
-        self.errors = patch("ui_common.messagebox.showerror").start()
+        self.errors = patch("classroom_attendance.ui.ui_common.messagebox.showerror").start()
         self.addCleanup(patch.stopall)
 
     def tearDown(self):
@@ -39,7 +39,7 @@ class UiExperienceTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def admin(self, width=940, height=600):
-        with patch("admin_app.model_health", return_value=(False, "请先采集并训练", None)):
+        with patch("classroom_attendance.ui.admin_app.model_health", return_value=(False, "请先采集并训练", None)):
             app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.root.geometry(f"{width}x{height}")
         self.root.update()
@@ -66,7 +66,7 @@ class UiExperienceTests(unittest.TestCase):
         return sid
 
     def test_initial_window_and_minimum_fit_1366_by_768_workarea(self):
-        with patch("ui_common.screen_workarea", return_value=(0, 0, 1366, 728)):
+        with patch("classroom_attendance.ui.ui_common.screen_workarea", return_value=(0, 0, 1366, 728)):
             app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.root.update()
         self.assertLessEqual(self.root.winfo_height() + self.root.winfo_y() + 32, 728)
@@ -74,7 +74,7 @@ class UiExperienceTests(unittest.TestCase):
         self.assert_inside(app.cancel_button, self.root)
 
     def test_window_minimum_also_shrinks_for_short_workareas(self):
-        with patch("ui_common.screen_workarea", return_value=(0, 0, 1024, 600)):
+        with patch("classroom_attendance.ui.ui_common.screen_workarea", return_value=(0, 0, 1024, 600)):
             fit_window(self.root, "1180x860", minimum=(940, 600))
         self.root.update()
         self.assertLessEqual(self.root.winfo_height(), 536)
@@ -155,7 +155,7 @@ class UiExperienceTests(unittest.TestCase):
         app = self.admin()
         app.notebook.select(app.pages["records"])
         app.records_tree.selection_set(app.records_tree.get_children()[0])
-        with patch("ui_common.screen_workarea", return_value=(0, 0, 1024, 640)):
+        with patch("classroom_attendance.ui.ui_common.screen_workarea", return_value=(0, 0, 1024, 640)):
             app.correct_record()
         self.root.update()
         dialog = next(w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel))
@@ -261,7 +261,7 @@ class UiExperienceTests(unittest.TestCase):
         message = "操作提示" * 30
         app.say(message)
         self.assertEqual(app.status.get(), message)
-        with patch("ui_common.messagebox.showinfo") as details:
+        with patch("classroom_attendance.ui.ui_common.messagebox.showinfo") as details:
             app.show_status()
         self.assertEqual(details.call_args.args[1], message)
 

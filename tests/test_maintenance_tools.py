@@ -11,20 +11,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from admin_app import AdminApp, CaptureDialog
-from app_errors import BusyError, TaskCancelled, ValidationError
-from attendance_store import AttendanceStore, _write_excel
+from classroom_attendance.ui.admin_app import AdminApp, CaptureDialog
+from classroom_attendance.core.app_errors import BusyError, TaskCancelled, ValidationError
+from classroom_attendance.storage.attendance_store import AttendanceStore, _write_excel
 from _face_test_support import authorize_faces
-from backup_service import create_backup, inspect_backup, restore_backup
-from camera_diagnostics import CameraPreviewWorker
-from camera_service import CameraWorker
-from maintenance_tools import (DEFAULT_TIMEOUTS, MIN_FREE_BYTES, TIMEOUT_KEY, WARN_FREE_BYTES,
+from classroom_attendance.storage.backup_service import create_backup, inspect_backup, restore_backup
+from classroom_attendance.camera.camera_diagnostics import CameraPreviewWorker
+from classroom_attendance.camera.camera_service import CameraWorker
+from classroom_attendance.maintenance.maintenance_tools import (DEFAULT_TIMEOUTS, MIN_FREE_BYTES, TIMEOUT_KEY, WARN_FREE_BYTES,
                                MaintenanceService, backup_space_required, disk_status, require_disk_space, summarize_logs)
-from maintenance_ui import CameraDiagnosticDialog
-from resource_lock import ResourceLease
-from student_app import StudentApp
-from task_runtime import TaskControl, checkpoint, current_control
-from train import train_model
+from classroom_attendance.maintenance.maintenance_ui import CameraDiagnosticDialog
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.ui.student_app import StudentApp
+from classroom_attendance.core.task_runtime import TaskControl, checkpoint, current_control
+from classroom_attendance.faces.train import train_model
 
 
 class DeferredCamera:
@@ -78,7 +78,7 @@ class MaintenanceServiceTests(MaintenanceFixture):
     def test_space_thresholds_and_exact_minimum(self):
         for free, state in ((MIN_FREE_BYTES-1, 'critical'), (MIN_FREE_BYTES, 'warning'),
                             (WARN_FREE_BYTES-1, 'warning'), (WARN_FREE_BYTES, 'ok')):
-            with self.subTest(free=free), patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(10**10, 0, free)):
+            with self.subTest(free=free), patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(10**10, 0, free)):
                 self.assertEqual(disk_status(self.folder)['state'], state)
                 if free < MIN_FREE_BYTES:
                     with self.assertRaisesRegex(ValidationError, '空间不足'):
@@ -87,7 +87,7 @@ class MaintenanceServiceTests(MaintenanceFixture):
                     self.assertEqual(require_disk_space(self.folder)['free_bytes'], free)
 
     def test_nonexistent_destination_checks_nearest_existing_directory(self):
-        with patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(10**10, 0, 10**9)) as usage:
+        with patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(10**10, 0, 10**9)) as usage:
             require_disk_space(self.folder / 'new' / 'deep')
         usage.assert_called_once_with(self.folder)
 
@@ -104,21 +104,21 @@ class MaintenanceServiceTests(MaintenanceFixture):
     def test_low_space_prevents_excel_and_preserves_existing_destination(self):
         output = self.folder / 'existing.xlsx'
         output.write_bytes(b'original')
-        with patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
+        with patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
             _write_excel(output, '测试', '', ['序号', '学号'], [])
         self.assertEqual(output.read_bytes(), b'original')
 
     def test_low_space_prevents_report_save(self):
-        from attendance_reports import write_report_workbook
-        with patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
+        from classroom_attendance.attendance.attendance_reports import write_report_workbook
+        with patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
             write_report_workbook(self.folder/'report.xlsx', {})
         self.assertFalse((self.folder/'report.xlsx').exists())
 
     def test_low_space_prevents_training_before_loading_or_replacing_model(self):
         output = self.folder / 'model.yml'
         output.write_bytes(b'original')
-        with patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), \
-                patch('train.create_recognizer') as recognizer, self.assertRaises(ValidationError):
+        with patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), \
+                patch('classroom_attendance.faces.train.create_recognizer') as recognizer, self.assertRaises(ValidationError):
             train_model(self.folder/'samples', output, _lease=False)
         recognizer.assert_not_called()
         self.assertEqual(output.read_bytes(), b'original')
@@ -126,7 +126,7 @@ class MaintenanceServiceTests(MaintenanceFixture):
     def test_low_space_backup_preserves_existing_archive(self):
         output = self.folder / 'backup.zip'
         output.write_bytes(b'original')
-        with patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
+        with patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), self.assertRaises(ValidationError):
             create_backup(self.store, output, model=self.folder/'none.yml', manifest=self.folder/'none.json', dataset=self.folder/'samples')
         self.assertEqual(output.read_bytes(), b'original')
         self.assertEqual(list(self.folder.glob('.backup-build-*')), [])
@@ -135,11 +135,11 @@ class MaintenanceServiceTests(MaintenanceFixture):
         self.store.save_student('001', '合成姓名', '合成班')
         authorize_faces(self.store)
         worker = CameraWorker(self.store, 'capture', student_id='001')
-        with patch('camera_service.DATASET_DIR', self.folder/'samples'), \
-                patch('camera_service.CAMERA_LOCK_PATH', self.folder/'camera.lock'), \
-                patch('camera_service.DATA_LOCK_PATH', self.folder/'data.lock'), \
-                patch('maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), \
-                patch('camera_service.open_camera') as camera:
+        with patch('classroom_attendance.camera.camera_service.DATASET_DIR', self.folder/'samples'), \
+                patch('classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH', self.folder/'camera.lock'), \
+                patch('classroom_attendance.camera.camera_service.DATA_LOCK_PATH', self.folder/'data.lock'), \
+                patch('classroom_attendance.maintenance.maintenance_tools.shutil.disk_usage', return_value=shutil._ntuple_diskusage(100, 100, 0)), \
+                patch('classroom_attendance.camera.camera_service.open_camera') as camera:
             worker.run()
         camera.assert_not_called()
         self.assertEqual([event[0] for event in worker.events.queue], ['error', 'stopped'])
@@ -174,7 +174,7 @@ class MaintenanceServiceTests(MaintenanceFixture):
     def test_failed_diagnostic_write_preserves_existing_file_and_cleans_temporary(self):
         output = self.folder/'diagnostic.zip'
         output.write_bytes(b'original')
-        with patch('maintenance_tools.zipfile.ZipFile.writestr', side_effect=OSError()), self.assertRaises(OSError):
+        with patch('classroom_attendance.maintenance.maintenance_tools.zipfile.ZipFile.writestr', side_effect=OSError()), self.assertRaises(OSError):
             self.service.export_diagnostics(output)
         self.assertEqual(output.read_bytes(), b'original')
         self.assertEqual(list(self.folder.glob('.diagnostics-*')), [])
@@ -209,7 +209,7 @@ class MaintenanceServiceTests(MaintenanceFixture):
     def test_missing_and_unreadable_logs_do_not_export_exception_values(self):
         self.assertEqual(summarize_logs(self.folder/'missing')['events'], {})
         (self.folder/'classroom.log').write_bytes(b'')
-        with patch('maintenance_tools.Path.open', side_effect=PermissionError('PRIVATE_PATH')):
+        with patch('classroom_attendance.maintenance.maintenance_tools.Path.open', side_effect=PermissionError('PRIVATE_PATH')):
             report = summarize_logs(self.folder)
         self.assertTrue(report['unavailable'])
         self.assertNotIn('PRIVATE_PATH', json.dumps(report))
@@ -259,7 +259,7 @@ class MaintenanceCameraTests(MaintenanceFixture):
             finally:
                 releasing.set()
                 release.wait(4)
-        with patch('camera_service.CAMERA_LOCK_PATH', lock), patch.object(worker, '_sign_loop', side_effect=loop):
+        with patch('classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH', lock), patch.object(worker, '_sign_loop', side_effect=loop):
             worker.start()
             try:
                 self.assertTrue(releasing.wait(2))
@@ -294,7 +294,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
         return CameraDiagnosticDialog(self.owner, worker_factory=DeferredCamera)
 
     def admin(self):
-        with patch('admin_app.model_health', return_value=(False, '未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '未训练', None)):
             return AdminApp(self.root, self.store, authenticated=True, async_io=False)
 
     def test_standalone_diagnostic_needs_no_model_students_or_session(self):
@@ -382,7 +382,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
         panel.export_seconds.set('60')
         panel.save()
         self.assertEqual(self.service.timeouts(), {'training': 300, 'export': 60})
-        with patch('maintenance_ui.filedialog.askdirectory', return_value=str(self.folder)):
+        with patch('classroom_attendance.maintenance.maintenance_ui.filedialog.askdirectory', return_value=str(self.folder)):
             panel.check_destination()
         self.assertIn('所选位置', panel.space.get())
         admin.close()
@@ -390,7 +390,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
     def test_invalid_timeout_ui_does_not_claim_success(self):
         admin = self.admin()
         admin.maintenance.training.set('bad')
-        with patch('maintenance_ui.MaintenancePanel.handle_error') as error:
+        with patch('classroom_attendance.maintenance.maintenance_ui.MaintenancePanel.handle_error') as error:
             admin.maintenance.save()
         error.assert_called_once()
         self.assertEqual(self.service.timeouts(), DEFAULT_TIMEOUTS)
@@ -402,13 +402,13 @@ class MaintenanceGuiTests(MaintenanceFixture):
         with patch.object(admin, 'run_job') as run:
             admin.train_faces()
         self.assertEqual(run.call_args.kwargs['timeout'], 300)
-        with patch('admin_app.filedialog.asksaveasfilename', return_value=str(self.folder/'test.xlsx')), \
+        with patch('classroom_attendance.ui.admin_app.filedialog.asksaveasfilename', return_value=str(self.folder/'test.xlsx')), \
                 patch.object(admin, 'run_job') as run:
             admin.export()
         self.assertEqual(run.call_args.kwargs['timeout'], 90)
         self.assertEqual(run.call_args.args[1].func, self.store.export_attendance)
         admin.reports.use_semester()
-        with patch('attendance_reports_ui.filedialog.asksaveasfilename', return_value=str(self.folder/'reports.xlsx')), \
+        with patch('classroom_attendance.attendance.attendance_reports_ui.filedialog.asksaveasfilename', return_value=str(self.folder/'reports.xlsx')), \
                 patch.object(admin, 'run_job') as run:
             admin.reports.export()
         self.assertEqual(run.call_args.kwargs['timeout'], 90)
@@ -417,10 +417,10 @@ class MaintenanceGuiTests(MaintenanceFixture):
             started.set()
             release.wait(3)
             checkpoint()
-        with patch('admin_app.filedialog.asksaveasfilename', return_value=str(self.folder/'slow.xlsx')), \
+        with patch('classroom_attendance.ui.admin_app.filedialog.asksaveasfilename', return_value=str(self.folder/'slow.xlsx')), \
                 patch.object(self.store, 'export_attendance', side_effect=slow_export), \
                 patch.object(MaintenanceService, 'timeouts', return_value={'training': 300, 'export': .03}), \
-                patch('ui_common.messagebox.showerror'):
+                patch('classroom_attendance.ui.ui_common.messagebox.showerror'):
             admin.export()
             self.assertTrue(started.wait(1))
             deadline = time.monotonic()+2
@@ -441,11 +441,11 @@ class MaintenanceGuiTests(MaintenanceFixture):
     def test_diagnostic_export_requests_confirmation_and_export_limit(self):
         self.service.save_timeouts(300, 90)
         admin = self.admin()
-        with patch('maintenance_ui.messagebox.askyesno', return_value=False), patch.object(admin, 'run_job') as run:
+        with patch('classroom_attendance.maintenance.maintenance_ui.messagebox.askyesno', return_value=False), patch.object(admin, 'run_job') as run:
             admin.maintenance.export_diagnostics()
         run.assert_not_called()
-        with patch('maintenance_ui.messagebox.askyesno', return_value=True), \
-                patch('maintenance_ui.filedialog.asksaveasfilename', return_value=str(self.folder/'diagnostic.zip')), \
+        with patch('classroom_attendance.maintenance.maintenance_ui.messagebox.askyesno', return_value=True), \
+                patch('classroom_attendance.maintenance.maintenance_ui.filedialog.asksaveasfilename', return_value=str(self.folder/'diagnostic.zip')), \
                 patch.object(admin, 'run_job') as run:
             admin.maintenance.export_diagnostics()
         self.assertEqual(run.call_args.kwargs['timeout'], 90)
@@ -465,7 +465,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
     def test_capture_disconnect_preserves_samples_and_only_collects_remaining(self):
         completed = []
         self.store.save_student('001', '合成人物', '测试班')
-        with patch('admin_app.CameraWorker', DeferredCamera):
+        with patch('classroom_attendance.ui.admin_app.CameraWorker', DeferredCamera):
             dialog = CaptureDialog(self.root, self.store, self.store.students()[0], completed.append)
             first = dialog.worker
             first.events.put(('progress', (7, 20)))
@@ -487,7 +487,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
 
     def test_capture_can_exit_after_disconnect_without_restart(self):
         completed = []
-        with patch('admin_app.CameraWorker', DeferredCamera):
+        with patch('classroom_attendance.ui.admin_app.CameraWorker', DeferredCamera):
             dialog = CaptureDialog(self.root, self.store, {'student_id': '001', 'name': '合成'}, completed.append)
         dialog.worker.events.put(('error', '断开'))
         dialog.worker.events.put(('stopped', 2))
@@ -500,7 +500,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
         self.store.save_student('001', '合成', '测试班')
         sid = self.store.create_session('测试课', '测试班', now-timedelta(minutes=1), now+timedelta(hours=1))
         self.store.open_session(sid)
-        with patch('student_app.model_health', return_value=(True, '就绪', {})):
+        with patch('classroom_attendance.ui.student_app.model_health', return_value=(True, '就绪', {})):
             app = StudentApp(self.root, self.store, worker_factory=DeferredCamera, async_io=False)
             app.toggle_camera()
         worker = app.worker
@@ -512,7 +512,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
         self.assertEqual(app.start_button['text'], '设备恢复后重试')
         self.assertIsNone(app.worker)
         self.store.close_session(sid)
-        with patch('student_app.model_health', return_value=(True, '就绪', {})):
+        with patch('classroom_attendance.ui.student_app.model_health', return_value=(True, '就绪', {})):
             app.toggle_camera()
         self.assertIsNone(app.worker)
         self.assertEqual(app.start_button['state'], 'disabled')
@@ -529,7 +529,7 @@ class MaintenanceGuiTests(MaintenanceFixture):
             release.wait(3)
             return original(path)
         ticks = []
-        with patch('maintenance_ui.disk_status', side_effect=slow):
+        with patch('classroom_attendance.maintenance.maintenance_ui.disk_status', side_effect=slow):
             panel.refresh()
             self.assertTrue(started.wait(1))
             self.root.after(5, lambda: ticks.append(True))

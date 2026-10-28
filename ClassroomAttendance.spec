@@ -4,8 +4,9 @@ import sys
 from PyInstaller.utils.hooks import copy_metadata
 
 root = Path(SPECPATH)
-resource_data = [(str(root / name), '.') for name in
-                 ('haarcascade_frontalface_default.xml', 'initial_data.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md')]
+resource_data = [(str(root / 'resources' / name), 'resources') for name in
+                 ('haarcascade_frontalface_default.xml', 'initial_data.json')]
+resource_data += [(str(root / name), '.') for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md')]
 for package in ('numpy', 'opencv-contrib-python', 'openpyxl', 'et_xmlfile', 'pyinstaller'):
     resource_data += copy_metadata(package)
 python_license = Path(sys.base_prefix) / 'LICENSE.txt'
@@ -17,7 +18,7 @@ a = Analysis(
     [str(root / 'app_entry.py')], pathex=[str(root)],
     binaries=[],
     datas=resource_data,
-    hiddenimports=['student_app', 'admin_app', 'recovery_app', 'runtime_probe'],
+    hiddenimports=['classroom_attendance.ui.student_app', 'classroom_attendance.ui.admin_app', 'classroom_attendance.storage.recovery_app', 'classroom_attendance.maintenance.runtime_probe'],
     hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)

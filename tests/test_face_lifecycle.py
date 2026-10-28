@@ -12,16 +12,16 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from admin_app import AdminApp
-from app_errors import BusyError, TaskCancelled, ValidationError
-from attendance_store import AttendanceStore
-from backup_service import SnapshotSource, create_backup, database_schema, inspect_backup, restore_backup
-from camera_service import CameraWorker
-from face_lifecycle import FaceLifecycleService
-from face_utils import save_gray
-from resource_lock import ResourceLease
-from task_runtime import TaskControl, current_control
-from train import manifest_path, model_health, train_model
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.core.app_errors import BusyError, TaskCancelled, ValidationError
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.storage.backup_service import SnapshotSource, create_backup, database_schema, inspect_backup, restore_backup
+from classroom_attendance.camera.camera_service import CameraWorker
+from classroom_attendance.faces.face_lifecycle import FaceLifecycleService
+from classroom_attendance.faces.face_utils import save_gray
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.core.task_runtime import TaskControl, current_control
+from classroom_attendance.faces.train import manifest_path, model_health, train_model
 
 
 class LifecycleFixture(unittest.TestCase):
@@ -168,18 +168,18 @@ class FaceAuthorizationTests(LifecycleFixture):
         self.grant(expires_on=self.now.date().isoformat())
         sid = self.session()
         tomorrow = self.now.replace(hour=23, minute=59, second=59)+timedelta(seconds=1)
-        from face_lifecycle import local_now
+        from classroom_attendance.faces.face_lifecycle import local_now
         def clock(value=None):
             return local_now(value) if value is not None else tomorrow
-        with patch('face_lifecycle.local_now', side_effect=clock), self.assertRaises(ValidationError):
+        with patch('classroom_attendance.faces.face_lifecycle.local_now', side_effect=clock), self.assertRaises(ValidationError):
             self.store.record_sign_in('001', sid, self.now)
         self.assertIsNone(self.store.session_rows(sid)[0]['original_signed_at'])
 
     def test_unauthorized_capture_never_opens_camera(self):
         worker = CameraWorker(self.store, 'capture', student_id='001')
-        with patch('camera_service.CAMERA_LOCK_PATH', self.directory/'.camera.lock'), \
-                patch('camera_service.DATA_LOCK_PATH', self.directory/'.samples.lock'), \
-                patch('camera_service.open_camera') as camera:
+        with patch('classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH', self.directory/'.camera.lock'), \
+                patch('classroom_attendance.camera.camera_service.DATA_LOCK_PATH', self.directory/'.samples.lock'), \
+                patch('classroom_attendance.camera.camera_service.open_camera') as camera:
             worker.run()
         camera.assert_not_called()
         self.assertEqual([item[0] for item in worker.events.queue], ['error', 'stopped'])
@@ -194,11 +194,11 @@ class FaceAuthorizationTests(LifecycleFixture):
             return True, np.full((200, 200, 3), 100, dtype=np.uint8)
         capture.read.side_effect = frame
         worker = CameraWorker(self.store, 'capture', student_id='001', target=1)
-        with patch('camera_service.CAMERA_LOCK_PATH', self.directory/'.camera.lock'), \
-                patch('camera_service.DATA_LOCK_PATH', self.directory/'.samples.lock'), \
-                patch('camera_service.DATASET_DIR', dataset), patch('camera_service.sample_paths', return_value=[]), \
-                patch('camera_service.open_camera', return_value=capture), patch('camera_service.load_classifier', return_value=detector), \
-                patch('camera_service.quality_hint', return_value=''):
+        with patch('classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH', self.directory/'.camera.lock'), \
+                patch('classroom_attendance.camera.camera_service.DATA_LOCK_PATH', self.directory/'.samples.lock'), \
+                patch('classroom_attendance.camera.camera_service.DATASET_DIR', dataset), patch('classroom_attendance.camera.camera_service.sample_paths', return_value=[]), \
+                patch('classroom_attendance.camera.camera_service.open_camera', return_value=capture), patch('classroom_attendance.camera.camera_service.load_classifier', return_value=detector), \
+                patch('classroom_attendance.camera.camera_service.quality_hint', return_value=''):
             worker.run()
         self.assertEqual(worker.saved, 0)
         self.assertEqual(list(dataset.iterdir()), [])
@@ -223,7 +223,7 @@ class FaceAuthorizationTests(LifecycleFixture):
         original = model.read_bytes()
         recognizer = Mock()
         recognizer.train.side_effect = lambda *args: self.service.revoke('001', '训练期间撤回')
-        with patch('train.create_recognizer', return_value=recognizer), self.assertRaisesRegex(ValueError, '授权已变化'):
+        with patch('classroom_attendance.faces.train.create_recognizer', return_value=recognizer), self.assertRaisesRegex(ValueError, '授权已变化'):
             train_model(dataset, model, {'001'}, _lease=False, store=self.store)
         self.assertEqual(model.read_bytes(), original)
 
@@ -378,7 +378,7 @@ class FaceCleanupTests(LifecycleFixture):
             if file.name == 'model-face_model.yml':
                 raise PermissionError('synthetic-failure')
             return original(file, *args, **kwargs)
-        with patch('face_lifecycle.Path.unlink', new=fail_model), self.assertRaises(PermissionError):
+        with patch('classroom_attendance.faces.face_lifecycle.Path.unlink', new=fail_model), self.assertRaises(PermissionError):
             self.service.apply_cleanup(self.password, plan['token'], '合成中断')
         return dataset
 

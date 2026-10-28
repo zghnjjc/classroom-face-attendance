@@ -16,15 +16,15 @@ from openpyxl import load_workbook
 
 from _face_test_support import authorize_faces
 from _flow_test_support import pump_flows
-from admin_app import AdminApp, CaptureDialog
-from app_errors import BusyError, TaskTimeout
-from attendance_fields import METHOD_TEXT, arrival_time_note
-from attendance_reports import summarize
-from attendance_store import AttendanceStore
-from audit_actions import ACTION_TEXT, CORRECT_ATTENDANCE, action_text
-from resource_lock import ResourceLease
-from task_runtime import FlowHost, IO
-from teacher_dashboard import attendance_counts
+from classroom_attendance.ui.admin_app import AdminApp, CaptureDialog
+from classroom_attendance.core.app_errors import BusyError, TaskTimeout
+from classroom_attendance.attendance.attendance_fields import METHOD_TEXT, arrival_time_note
+from classroom_attendance.attendance.attendance_reports import summarize
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.attendance.audit_actions import ACTION_TEXT, CORRECT_ATTENDANCE, action_text
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.core.task_runtime import FlowHost, IO
+from classroom_attendance.dashboard.teacher_dashboard import attendance_counts
 
 
 class ReviewFixture(unittest.TestCase):
@@ -120,7 +120,7 @@ class ReviewGuiTests(ReviewFixture):
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.close_root)
-        self.health = patch('admin_app.model_health', return_value=(False, '请先训练', None))
+        self.health = patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '请先训练', None))
         self.health.start()
         self.addCleanup(self.health.stop)
         self.errors = patch('tkinter.messagebox.showerror').start()
@@ -222,7 +222,7 @@ class ReviewGuiTests(ReviewFixture):
             def take_frame(self): return None
 
         completed = []
-        with patch('admin_app.CameraWorker', FakeWorker):
+        with patch('classroom_attendance.ui.admin_app.CameraWorker', FakeWorker):
             dialog = CaptureDialog(self.root, self.store, self.store.students()[0], completed.append, target=3)
             self.assertEqual(float(dialog.progress['maximum']), 3)
             self.assertEqual(workers[0].target, 3)

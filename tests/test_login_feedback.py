@@ -11,9 +11,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from admin_app import AdminLogin
-from app_errors import configure_logging, logger
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminLogin
+from classroom_attendance.core.app_errors import configure_logging, logger
+from classroom_attendance.storage.attendance_store import AttendanceStore
 
 
 class PasswordCase(unittest.TestCase):
@@ -52,7 +52,7 @@ class LoginStatusTests(PasswordCase):
             self.assertEqual(result["attempts_remaining"], remaining)
         self.assertEqual(result["retry_after_seconds"], 60)
         self.assertEqual(result["failures"], 5)
-        with patch("attendance_store.hashlib.pbkdf2_hmac") as hashing:
+        with patch("classroom_attendance.storage.attendance_store.hashlib.pbkdf2_hmac") as hashing:
             blocked = self.store.authenticate_with_status(self.password, self.now)
         hashing.assert_not_called()
         self.assertFalse(blocked["attempted"])
@@ -167,7 +167,7 @@ class LoginFeedbackGuiTests(PasswordCase):
         self.fail_attempts(2)
         login = self.open_login()
         login.password.set(self.password)
-        with patch("admin_app.AdminApp", return_value=Mock(pages={'home': 'home-page'})) as management:
+        with patch("classroom_attendance.ui.admin_app.AdminApp", return_value=Mock(pages={'home': 'home-page'})) as management:
             login.submit()
         management.assert_called_once()
         self.assertTrue(login.login_complete)

@@ -5,10 +5,10 @@ import tkinter as tk
 import unittest
 from pathlib import Path
 
-from admin_app import AdminApp
-from app_config import SEED_PATH
-from attendance_store import AttendanceStore
-from student_app import StudentApp
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.core.app_config import SEED_PATH
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.ui.student_app import StudentApp
 
 
 class EmptyProjectTests(unittest.TestCase):

@@ -10,10 +10,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from student_app import StudentApp
+from classroom_attendance.ui.student_app import StudentApp
 
 
 class FakeCamera:
@@ -97,7 +97,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn("失败", app.status.get())
 
     def test_waiting_student_timer_discovers_session_after_failure(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student()
             with self.fast_timer(app, app.tick_session):
                 with patch.object(self.store, "active_session", side_effect=sqlite3.OperationalError("database is locked")):
@@ -108,7 +108,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(app.start_button["state"], "normal")
 
     def test_signed_result_retries_and_stopped_event_is_consumed(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student(opened=True)
             record = self.store.record_sign_in("001", self.sid)
             worker = app.worker
@@ -126,7 +126,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.store.session_rows(self.sid)[0]["signed_at"], record["signed_at"])
 
     def test_pending_result_is_dropped_if_session_changes_during_outage(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student(opened=True)
             app.worker.events.put(("signed", self.store.record_sign_in("001", self.sid)))
             with self.fast_timer(app, app.poll_camera):
@@ -140,7 +140,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(app.worker.stopped)
 
     def test_session_rows_failure_does_not_commit_partial_session_or_lose_timer(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student()
             self.store.open_session(self.sid)
             with self.fast_timer(app, app.tick_session):
@@ -152,7 +152,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(app.start_button["state"], "normal")
 
     def test_camera_start_query_error_keeps_start_disabled_until_recovery(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student()
             self.store.open_session(self.sid)
             with self.fast_timer(app, app.tick_session):
@@ -164,7 +164,7 @@ class RecoveryTests(unittest.TestCase):
                 self.wait_for(lambda: app.start_button["state"] == "normal")
 
     def test_database_failure_does_not_prevent_later_hint_or_stop(self):
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = self.student(opened=True)
             worker = app.worker
             worker.events.put(("signed", self.store.record_sign_in("001", self.sid)))

@@ -58,6 +58,7 @@ py -3.11 -m venv .venv
 
 | 想了解什么 | 去哪里看 |
 | --- | --- |
+| 想改某个功能，代码和测试在哪里 | [模块导航](docs/modules.md) |
 | 详细操作、常见问题 | [使用说明](docs/user-guide.md) |
 | 数据保存在哪里，怎样备份或清理 | [数据与隐私](docs/data-and-privacy.md) |
 | 摄像头故障排查、人脸授权与清理 | [维护说明](docs/maintenance.md) · [人脸资料管理](docs/face-lifecycle.md) |
@@ -67,3 +68,5 @@ py -3.11 -m venv .venv
 遇到问题可在 [Issues](https://github.com/zghnjjc/classroom-face-attendance/issues) 描述操作步骤和错误提示，截图请先遮住个人信息。安全问题请按 [安全策略](SECURITY.md) 反馈。
 
 代码采用 [MIT 许可证](LICENSE)。第三方组件说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，设计参考见 [致谢](docs/acknowledgements.md)。
+
+应用代码集中在 `classroom_attendance/`，按考勤、排课、人脸、摄像头、存储等功能分目录；静态资源放在 `resources/`，辅助脚本放在 `tools/`。根目录保留 `app_entry.py` 作为统一启动入口。

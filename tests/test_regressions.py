@@ -14,17 +14,17 @@ from unittest.mock import Mock, patch
 import numpy as np
 from openpyxl import Workbook, load_workbook
 
-from admin_app import AdminApp, CaptureDialog
-from attendance_store import AttendanceStore, read_student_import
+from classroom_attendance.ui.admin_app import AdminApp, CaptureDialog
+from classroom_attendance.storage.attendance_store import AttendanceStore, read_student_import
 from _face_test_support import authorize_faces
-from camera_service import CameraWorker
-from GUI import Launcher
-from face_utils import save_gray
-from resource_lock import ResourceLease
-from student_app import StudentApp
-from train import manifest_path, model_health, train_model
-from ui_common import INK, WHITE
-from task_runtime import TaskControl
+from classroom_attendance.camera.camera_service import CameraWorker
+from classroom_attendance.ui.launcher import Launcher
+from classroom_attendance.faces.face_utils import save_gray
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.ui.student_app import StudentApp
+from classroom_attendance.faces.train import manifest_path, model_health, train_model
+from classroom_attendance.ui.ui_common import INK, WHITE
+from classroom_attendance.core.task_runtime import TaskControl
 
 
 class DeferredCamera:
@@ -172,7 +172,7 @@ class GuiRegressionTests(TemporaryStoreTest):
     def student_app(self):
         sid = self.session()
         self.store.open_session(sid, self.now)
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app = StudentApp(self.root, self.store, worker_factory=DeferredCamera, async_io=False)
             app.toggle_camera()
         return app, sid
@@ -207,7 +207,7 @@ class GuiRegressionTests(TemporaryStoreTest):
         self.store.close_session(sid)
         other = self.session("下一课")
         self.store.open_session(other, self.now)
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app.refresh_session()
             worker.events.put(("signed", record))
             worker.events.put(("hint", "上一课次的识别提示"))
@@ -228,7 +228,7 @@ class GuiRegressionTests(TemporaryStoreTest):
         self.assertIsNone(app.worker)
         self.assertEqual(app.start_button["state"], "normal")
         self.assertIn("断开", app.hint.get())
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             app.toggle_camera()
         self.assertIsNotNone(app.worker)
         self.assertIsNot(app.worker, worker)
@@ -245,7 +245,7 @@ class GuiRegressionTests(TemporaryStoreTest):
     def test_model_failure_blocks_start_without_losing_page(self):
         sid = self.session()
         self.store.open_session(sid, self.now)
-        with patch("student_app.model_health", return_value=(False, "样本已更新", None)):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(False, "样本已更新", None)):
             app = StudentApp(self.root, self.store, worker_factory=DeferredCamera, async_io=False)
             app.toggle_camera()
         self.assertIsNone(app.worker)
@@ -257,24 +257,24 @@ class GuiRegressionTests(TemporaryStoreTest):
         app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         app.job_control=TaskControl()
         app.jobs.put((True, "测试任务", "结果", Mock(side_effect=ValueError("刷新失败")),app.job_control))
-        with patch("ui_common.messagebox.showerror") as error:
+        with patch("classroom_attendance.ui.ui_common.messagebox.showerror") as error:
             app.poll_jobs()
         self.assertFalse(app.busy)
         error.assert_called_once()
 
     def test_template_write_failure_does_not_claim_success(self):
         app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
-        with patch("admin_app.filedialog.asksaveasfilename", return_value=str(self.folder/"模板.csv")), \
+        with patch("classroom_attendance.ui.admin_app.filedialog.asksaveasfilename", return_value=str(self.folder/"模板.csv")), \
                 patch("pathlib.Path.write_text", side_effect=PermissionError("文件不可写")), \
-                patch("admin_app.messagebox.showerror") as error:
+                patch("classroom_attendance.ui.admin_app.messagebox.showerror") as error:
             app.roster_template()
         error.assert_called_once()
         self.assertNotIn("模板已保存", app.status.get())
 
     def test_launcher_failure_keeps_entry_available(self):
         launcher = Launcher(self.root)
-        with patch("GUI.launch_script", side_effect=OSError("启动失败")), \
-                patch("GUI.messagebox.showerror") as error:
+        with patch("classroom_attendance.ui.launcher.launch_script", side_effect=OSError("启动失败")), \
+                patch("classroom_attendance.ui.launcher.messagebox.showerror") as error:
             launcher.open_role("student_app.py")
         error.assert_called_once()
         self.assertTrue(self.root.winfo_exists())
@@ -282,7 +282,7 @@ class GuiRegressionTests(TemporaryStoreTest):
     def test_admin_and_student_follow_same_session_and_correction(self):
         admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         student_root = tk.Toplevel(self.root)
-        with patch("student_app.model_health", return_value=(True, "就绪", {})):
+        with patch("classroom_attendance.ui.student_app.model_health", return_value=(True, "就绪", {})):
             student = StudentApp(student_root, self.store, worker_factory=DeferredCamera, async_io=False)
             self.assertIsNone(student.current_session)
             admin.course.set("双端联动课")
@@ -290,7 +290,7 @@ class GuiRegressionTests(TemporaryStoreTest):
             admin.ends.set((self.now+timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"))
             admin.create_session()
             sid = admin.selected_session_id()
-            with patch("admin_app.model_health", return_value=(True, "就绪", {"student_ids": ["001", "002"]})):
+            with patch("classroom_attendance.ui.admin_app.model_health", return_value=(True, "就绪", {"student_ids": ["001", "002"]})):
                 admin.open_session()
             student.refresh_session()
             self.assertEqual(student.current_session["id"], sid)
@@ -303,7 +303,7 @@ class GuiRegressionTests(TemporaryStoreTest):
             self.store.correct_attendance(sid, "002", "leave", "老师核实")
             admin.refresh_sessions()
             self.assertIn("请假 1", admin.record_summary.cget("text"))
-            with patch("admin_app.messagebox.askyesno", return_value=True):
+            with patch("classroom_attendance.ui.admin_app.messagebox.askyesno", return_value=True):
                 admin.close_session()
             student.refresh_session()
             self.assertIsNone(student.current_session)
@@ -316,7 +316,7 @@ class GuiRegressionTests(TemporaryStoreTest):
     def test_capture_dialog_completion_and_early_stop(self):
         completed = []
         student = self.store.students()[0]
-        with patch("admin_app.CameraWorker", DeferredCamera):
+        with patch("classroom_attendance.ui.admin_app.CameraWorker", DeferredCamera):
             dialog = CaptureDialog(self.root, self.store, student, completed.append)
         dialog.worker.events.put(("progress", (3, 20)))
         dialog.poll()
@@ -382,13 +382,13 @@ class CameraRegressionTests(TemporaryStoreTest):
                     return True, "就绪", {"model_sha256": "old"}
                 # 加快时间与等待，仍走真实的连续确认、去重和资源释放路径。
                 counter = iter(range(1, 1000))
-                with patch("camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
-                        patch("camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
-                        patch("camera_service.open_camera", return_value=capture), \
-                        patch("camera_service.load_classifier", return_value=detector), \
-                        patch("camera_service.load_recognizer", return_value=matcher), \
-                        patch("camera_service.model_health", side_effect=health), \
-                        patch("camera_service.time.monotonic", side_effect=lambda: next(counter)*.2), \
+                with patch("classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
+                        patch("classroom_attendance.camera.camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
+                        patch("classroom_attendance.camera.camera_service.open_camera", return_value=capture), \
+                        patch("classroom_attendance.camera.camera_service.load_classifier", return_value=detector), \
+                        patch("classroom_attendance.camera.camera_service.load_recognizer", return_value=matcher), \
+                        patch("classroom_attendance.camera.camera_service.model_health", side_effect=health), \
+                        patch("classroom_attendance.camera.camera_service.time.monotonic", side_effect=lambda: next(counter)*.2), \
                         patch.object(worker.stop_event, "wait"), \
                         patch.object(self.store, "record_sign_in", side_effect=record_and_change):
                     worker.run()
@@ -413,12 +413,12 @@ class CameraRegressionTests(TemporaryStoreTest):
         detector = Mock()
         detector.detectMultiScale.return_value = [(30, 30, 160, 160)]
         worker = CameraWorker(self.store, "capture", student_id="001", target=1)
-        with patch("camera_service.DATASET_DIR", dataset), \
-                patch("camera_service.sample_paths", lambda: sorted(dataset.glob("*.jpg"))), \
-                patch("camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
-                patch("camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
-                patch("camera_service.open_camera", return_value=capture), \
-                patch("camera_service.load_classifier", return_value=detector):
+        with patch("classroom_attendance.camera.camera_service.DATASET_DIR", dataset), \
+                patch("classroom_attendance.camera.camera_service.sample_paths", lambda: sorted(dataset.glob("*.jpg"))), \
+                patch("classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
+                patch("classroom_attendance.camera.camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
+                patch("classroom_attendance.camera.camera_service.open_camera", return_value=capture), \
+                patch("classroom_attendance.camera.camera_service.load_classifier", return_value=detector):
             worker.run()
         self.assertEqual(worker.saved, 1)
         self.assertTrue((dataset / "001.8.jpg").exists())
@@ -433,10 +433,10 @@ class CameraRegressionTests(TemporaryStoreTest):
         capture.read.return_value = (False, None)
         worker = CameraWorker(self.store, "sign", session_id=sid)
         lock = self.folder / "camera.lock"
-        with patch("camera_service.CAMERA_LOCK_PATH", lock), \
-                patch("camera_service.model_health", return_value=(True, "就绪", {})), \
-                patch("camera_service.load_recognizer"), patch("camera_service.load_classifier"), \
-                patch("camera_service.open_camera", return_value=capture):
+        with patch("classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH", lock), \
+                patch("classroom_attendance.camera.camera_service.model_health", return_value=(True, "就绪", {})), \
+                patch("classroom_attendance.camera.camera_service.load_recognizer"), patch("classroom_attendance.camera.camera_service.load_classifier"), \
+                patch("classroom_attendance.camera.camera_service.open_camera", return_value=capture):
             worker.run()
         capture.release.assert_called_once()
         self.assertTrue(any(event[0] == "error" for event in worker.events.queue))
@@ -447,9 +447,9 @@ class CameraRegressionTests(TemporaryStoreTest):
     def test_stopped_worker_never_opens_camera(self):
         worker = CameraWorker(self.store, "capture", student_id="001")
         worker.stop()
-        with patch("camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
-                patch("camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
-                patch("camera_service.open_camera") as opened:
+        with patch("classroom_attendance.camera.camera_service.CAMERA_LOCK_PATH", self.folder/"camera.lock"), \
+                patch("classroom_attendance.camera.camera_service.DATA_LOCK_PATH", self.folder/"data.lock"), \
+                patch("classroom_attendance.camera.camera_service.open_camera") as opened:
             worker.run()
         opened.assert_not_called()
 

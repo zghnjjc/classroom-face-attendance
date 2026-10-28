@@ -19,15 +19,15 @@ from unittest.mock import patch
 import test_A_fixes
 import test_face_lifecycle
 from _flow_test_support import pump_flows
-from admin_app import AdminApp
-from app_errors import TaskTimeout, ValidationError
-from attendance_store import AttendanceStore
-from face_delete_recovery import prepare_deletion, recover_face_deletions
-from face_lifecycle import FaceLifecycleService
-from face_privacy import delete_face_data
-from task_runtime import FlowHost, IO
-from train import manifest_path, model_health
-from ui_common import BaseWindow
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.core.app_errors import TaskTimeout, ValidationError
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.faces.face_delete_recovery import prepare_deletion, recover_face_deletions
+from classroom_attendance.faces.face_lifecycle import FaceLifecycleService
+from classroom_attendance.faces.face_privacy import delete_face_data
+from classroom_attendance.core.task_runtime import FlowHost, IO
+from classroom_attendance.faces.train import manifest_path, model_health
+from classroom_attendance.ui.ui_common import BaseWindow
 
 
 class ScheduledHost(FlowHost):
@@ -122,7 +122,7 @@ class AuthorizationFeedbackTests(test_face_lifecycle.LifecycleFixture):
         self.root.withdraw()
         self.app=AdminApp(self.root,self.store,authenticated=True)
         self.panel=self.app.lifecycle
-        self.errors=patch('ui_common.messagebox.showerror').start()
+        self.errors=patch('classroom_attendance.ui.ui_common.messagebox.showerror').start()
         self.addCleanup(patch.stopall)
         self.addCleanup(self.cleanup_root)
         self.wait(lambda:self.panel.snapshot is not None and not self.app._running_flows)
@@ -230,7 +230,7 @@ class AuthorizationFeedbackTests(test_face_lifecycle.LifecycleFixture):
             entered.set()
             release.wait(3)
             return {'training':180,'export':120}
-        with patch('face_lifecycle_ui.MaintenanceService.timeouts',side_effect=limits), \
+        with patch('classroom_attendance.faces.face_lifecycle_ui.MaintenanceService.timeouts',side_effect=limits), \
                 patch.object(self.panel.service,'grant') as grant:
             submit.invoke()
             self.wait(entered.is_set)
@@ -272,8 +272,8 @@ class DeletionRecoveryTests(test_A_fixes.TemporaryCase):
 import os,sys
 from pathlib import Path
 from unittest.mock import patch
-from attendance_store import AttendanceStore
-from face_privacy import delete_face_data
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.faces.face_privacy import delete_face_data
 folder,phase=Path(sys.argv[1]),sys.argv[2]
 store=AttendanceStore(folder/'attendance.db',seed_path=None)
 if phase=='move':
@@ -281,7 +281,7 @@ if phase=='move':
     def checkpoint():
         calls[0]+=1
         if calls[0]==2: os._exit(71)
-    scope=patch('face_privacy.checkpoint',checkpoint)
+    scope=patch('classroom_attendance.faces.face_privacy.checkpoint',checkpoint)
 elif phase=='install':
     original=store._audit
     def audit(connection,action,*args,**kwargs):
@@ -289,7 +289,7 @@ elif phase=='install':
         return original(connection,action,*args,**kwargs)
     scope=patch.object(store,'_audit',audit)
 else:
-    scope=patch('face_privacy.recover_deletion',lambda *args:os._exit(73))
+    scope=patch('classroom_attendance.faces.face_privacy.recover_deletion',lambda *args:os._exit(73))
 with scope:
     delete_face_data(store,'test-password-2026',student_id='001',clear_all=phase=='commit',
         dataset=folder/'dataset',model=folder/'face_model.yml',camera_lock=folder/'.camera.lock',data_lock=folder/'.samples.lock')
@@ -360,8 +360,8 @@ with scope:
         self.seed_delete()
         self.crash('move')
         with self.assertRaises(ValidationError): self.store.backup_archive(self.folder/'backup.zip')
-        from train import train_model
-        with patch('train.DATA_LOCK_PATH',self.folder/'.samples.lock'),self.assertRaises(ValidationError):
+        from classroom_attendance.faces.train import train_model
+        with patch('classroom_attendance.faces.train.DATA_LOCK_PATH',self.folder/'.samples.lock'),self.assertRaises(ValidationError):
             train_model(self.dataset,self.model,{'002'})
 
 

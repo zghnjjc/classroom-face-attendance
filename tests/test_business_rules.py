@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
 
 
@@ -393,7 +393,7 @@ class BusinessGuiTests(BusinessFixture):
         dialog = self.dialog()
         next(w for w in self.descendants(dialog) if isinstance(w, tk.Text)).insert("1.0", "现场核实")
         save = next(w for w in self.descendants(dialog) if isinstance(w, tk.Button) and w.cget("text") == "保存更正")
-        with patch("admin_app.messagebox.showerror") as error:
+        with patch("classroom_attendance.ui.admin_app.messagebox.showerror") as error:
             save.invoke()
             self.assertTrue(error.called)
         next(w for w in self.descendants(dialog) if isinstance(w, ttk.Checkbutton)).invoke()

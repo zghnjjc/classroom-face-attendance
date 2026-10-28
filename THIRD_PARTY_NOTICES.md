@@ -9,7 +9,7 @@
 
 | 项目 | 说明 |
 | --- | --- |
-| 文件 | `haarcascade_frontalface_default.xml` |
+| 文件 | `resources/haarcascade_frontalface_default.xml` |
 | 文件大小 | 930,127 字节（约 930 KB） |
 | SHA-256 | `0f7d4527844eb514d4a4948e822da90fbb16a34a0bbbbc6adc6498747a5aafb0` |
 | 来源 | OpenCV 数据目录的上游文件 `opencv/data/haarcascades/haarcascade_frontalface_default.xml`；文件头注明由 Rainer Lienhart 创建（stump-based 24×24 AdaBoost frontal face detector） |

@@ -10,10 +10,10 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from admin_app import AdminApp,AdminLogin
-from attendance_store import AttendanceStore
-from student_app import StudentApp
-from ui_common import BaseWindow, CameraView
+from classroom_attendance.ui.admin_app import AdminApp,AdminLogin
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.ui.student_app import StudentApp
+from classroom_attendance.ui.ui_common import BaseWindow, CameraView
 
 
 class FakeCamera:
@@ -54,7 +54,7 @@ class GuiTests(unittest.TestCase):
                 pattern.encode("ascii")
                 return super().strftime(pattern)
 
-        with patch("ui_common.datetime") as clock:
+        with patch("classroom_attendance.ui.ui_common.datetime") as clock:
             clock.now.return_value = AsciiLocaleDate(2026, 1, 2)
             BaseWindow(self.root, "Test", "Date header", async_io=False)
         self.root.update_idletasks()
@@ -78,7 +78,7 @@ class GuiTests(unittest.TestCase):
 
     def test_student_refreshes_session_and_stops_when_teacher_closes(self):
         sid=self.make_open_session()
-        with patch("student_app.model_health",return_value=(True,"就绪",{})):
+        with patch("classroom_attendance.ui.student_app.model_health",return_value=(True,"就绪",{})):
             app=StudentApp(self.root,self.store,worker_factory=FakeCamera, async_io=False)
             app.toggle_camera(); self.assertIsNotNone(app.worker)
             worker=app.worker
@@ -112,7 +112,7 @@ class GuiTests(unittest.TestCase):
         heartbeat=[]; self.root.after(10,lambda:heartbeat.append(True))
         completed=[]
         def work(): time.sleep(.15); return "completed"
-        with patch("ui_common.messagebox.showerror") as error:
+        with patch("classroom_attendance.ui.ui_common.messagebox.showerror") as error:
             app.run_job("测试后台任务",work,completed.append)
             deadline=time.monotonic()+3
             while app.busy and time.monotonic()<deadline:

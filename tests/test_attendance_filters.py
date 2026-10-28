@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from admin_app import AdminApp
-from attendance_filters import default_semester_dates, record_date_range
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.attendance.attendance_filters import default_semester_dates, record_date_range
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
 
 
@@ -164,7 +164,7 @@ class FilterGuiTests(FilterFixture):
         super().setUp()
         self.clock = type("Clock", (datetime,), {"current": self.now,
             "now": classmethod(lambda cls, tz=None: cls.current)})
-        self.clock_patch = patch("admin_app.datetime", self.clock)
+        self.clock_patch = patch("classroom_attendance.ui.admin_app.datetime", self.clock)
         self.clock_patch.start()
         self.addCleanup(self.clock_patch.stop)
         self.first = self.closed_session(datetime(2026, 10, 21, 8), "课程一", signed=("001",))
@@ -266,7 +266,7 @@ class FilterGuiTests(FilterFixture):
         choice = next(k for k, v in self.app.record_lookup.items() if v == self.second)
         self.choose(self.app.record_choice, self.app.record_combo, choice)
         output = self.folder / "界面筛选导出.xlsx"
-        with patch("admin_app.filedialog.asksaveasfilename", return_value=str(output)):
+        with patch("classroom_attendance.ui.admin_app.filedialog.asksaveasfilename", return_value=str(output)):
             self.app.export()
             deadline = time.monotonic() + 5
             while self.app.busy and time.monotonic() < deadline:
@@ -311,7 +311,7 @@ class FilterGuiTests(FilterFixture):
                 yield from descendants(child)
         save = next(w for w in descendants(dialog) if isinstance(w, tk.Button) and w.cget("text") == "保存设置")
         with patch.object(self.store, "attendance_records", side_effect=sqlite3.OperationalError("database is locked")), \
-                patch("admin_app.messagebox.showerror") as error:
+                patch("classroom_attendance.ui.admin_app.messagebox.showerror") as error:
             save.invoke()
         self.assertFalse(dialog.winfo_exists())
         error.assert_called_once()

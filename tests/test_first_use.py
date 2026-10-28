@@ -12,16 +12,16 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from admin_app import AdminApp, AdminLogin
-from app_errors import BusyError, TaskCancelled
-from attendance_store import AttendanceStore
-from camera_diagnostics import CameraPreviewWorker
-from first_use import FirstUseService, SETUP_KEY
-from first_use_ui import FirstUseWizard
-from GUI import InitialLauncher, Launcher
-from resource_lock import ResourceLease
-from storage_welcome import StorageWelcome
-from task_runtime import TaskControl, current_control
+from classroom_attendance.ui.admin_app import AdminApp, AdminLogin
+from classroom_attendance.core.app_errors import BusyError, TaskCancelled
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.camera.camera_diagnostics import CameraPreviewWorker
+from classroom_attendance.onboarding.first_use import FirstUseService, SETUP_KEY
+from classroom_attendance.onboarding.first_use_ui import FirstUseWizard
+from classroom_attendance.ui.launcher import InitialLauncher, Launcher
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.onboarding.storage_welcome import StorageWelcome
+from classroom_attendance.core.task_runtime import TaskControl, current_control
 
 
 PASSWORD = 'Example-setup-password-2026'
@@ -327,13 +327,13 @@ class FirstUseGuiTests(SetupFixture):
 
     def test_existing_teacher_can_reopen_wizard_and_return_to_selected_page(self):
         self.store.setup_admin(PASSWORD)
-        with patch('admin_app.model_health', return_value=(False, '未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '未训练', None)):
             admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
             admin.open_setup()
             wizard = admin.setup_dialog
             self.root.update()
             self.assertTrue(wizard.reviewing)
-            with patch('first_use_ui.messagebox.askyesno', return_value=True):
+            with patch('classroom_attendance.onboarding.first_use_ui.messagebox.askyesno', return_value=True):
                 wizard.restart()
             self.assertEqual(wizard.page, 'camera')
             wizard.skip()
@@ -422,7 +422,7 @@ class FirstUseGuiTests(SetupFixture):
         wizard.skip()
         source = self.folder / '名单.csv'
         source.write_text('学号,姓名,班级\n001,合成甲,甲班\n', encoding='utf-8-sig')
-        with patch('first_use_ui.filedialog.askopenfilename', return_value=str(source)):
+        with patch('classroom_attendance.onboarding.first_use_ui.filedialog.askopenfilename', return_value=str(source)):
             wizard.load_roster()
             self.assertEqual(self.store.students(), [])
             self.assertEqual(len(wizard.roster_tree.get_children()), 1)
@@ -485,11 +485,11 @@ class FirstUseGuiTests(SetupFixture):
     def test_default_location_persists_before_continuing_and_failure_keeps_screen(self):
         started = []
         screen = StorageWelcome(self.root, 'admin', lambda: started.append(True))
-        with patch('storage_welcome.save_data_location', side_effect=PermissionError()), patch('storage_welcome.messagebox.showerror'):
+        with patch('classroom_attendance.onboarding.storage_welcome.save_data_location', side_effect=PermissionError()), patch('classroom_attendance.onboarding.storage_welcome.messagebox.showerror'):
             screen.accept()
         self.assertEqual(started, [])
         self.assertTrue(screen.frame.winfo_exists())
-        with patch('storage_welcome.save_data_location') as save:
+        with patch('classroom_attendance.onboarding.storage_welcome.save_data_location') as save:
             screen.accept()
         save.assert_called_once()
         self.assertEqual(started, [True])

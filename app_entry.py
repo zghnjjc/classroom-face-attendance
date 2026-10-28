@@ -25,20 +25,20 @@ def main(argv=None):
     if args.data_dir is not None:
         os.environ["CLASSROOM_DATA_DIR"] = str(args.data_dir.expanduser().resolve())
     if args.self_test:
-        from runtime_probe import run_self_test
+        from classroom_attendance.maintenance.runtime_probe import run_self_test
         return run_self_test(args.self_test)
     if args.reset_admin:
-        from reset_admin import gui_main
-        from app_config import DATA_DIR
+        from classroom_attendance.maintenance.reset_admin import gui_main
+        from classroom_attendance.core.app_config import DATA_DIR
         return gui_main(DATA_DIR)
     if args.role == "student":
-        from student_app import main as launch
+        from classroom_attendance.ui.student_app import main as launch
     elif args.role == "admin":
-        from admin_app import main as launch
+        from classroom_attendance.ui.admin_app import main as launch
     elif args.role == "restore":
-        from recovery_app import main as launch
+        from classroom_attendance.storage.recovery_app import main as launch
     else:
-        from GUI import main as launch
+        from classroom_attendance.ui.launcher import main as launch
     launch()
     return 0
 

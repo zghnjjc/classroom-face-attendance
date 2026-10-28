@@ -19,9 +19,9 @@
 | 完整备份 `.zip`（用户选择位置） | 数据库一致性副本、模型、模型清单、`dataset/` 全部样本、备份信息 JSON | **高** | 管理端“保存完整备份”生成 |
 | `classroom-auto-<标识>/auto_*.zip`、`index.json` | 自动完整备份及文件名/大小/哈希归属索引；默认在数据目录 `backups/`，可另选位置 | ZIP **高**，索引中 | 启用后教师端按日生成，按份数受控清理 |
 | 考勤导出 `.xlsx` | 学号、姓名、班级、状态、实际到课时间、记录方式、备注、课程、课次时间、原始人脸签到时间 | **高** | 管理端导出生成 |
-| `password_reset_<时间戳>.db` | 离线重置管理密码前的数据库副本 | **高** | 运行 `reset_admin.py` 时生成 |
+| `password_reset_<时间戳>.db` | 离线重置管理密码前的数据库副本 | **高** | 运行 `classroom_attendance/maintenance/reset_admin.py` 时生成 |
 | `.camera.lock`、`.samples.lock` | 跨进程资源锁文件（内容为占位字节） | 低 | 运行时创建，进程退出后自动释放，文件保留 |
-| `initial_data.json` | 空初始化种子（`students`/`attendance` 为空） | 无 | 仓库自带；仅首次初始化读取 |
+| `resources/initial_data.json` | 空初始化种子（`students`/`attendance` 为空） | 无 | 仓库自带；仅首次初始化读取 |
 
 数据库中主要表的含义：
 
@@ -89,7 +89,7 @@
 发行包可在关闭全部窗口后运行 `./ClassroomAttendance.exe --reset-admin` 并在本机对话框中确认；源码也可在仓库根目录执行（自定义数据目录需替换参数）：
 
 ```powershell
-./.venv/Scripts/python.exe reset_admin.py --data-dir "$env:LOCALAPPDATA\ClassroomFaceAttendance" --confirm-reset
+./.venv/Scripts/python.exe -m classroom_attendance.maintenance.reset_admin --data-dir "$env:LOCALAPPDATA\ClassroomFaceAttendance" --confirm-reset
 ```
 
 - 脚本要求显式 `--confirm-reset`；不会创建新数据库；若指定目录没有 `attendance.db` 会拒绝执行。
@@ -142,7 +142,7 @@ restore_status.json
 - 日志位置：`logs/classroom.log`；按 1 MB 轮转，保留 3 份旧日志。
 - 记录内容：事件名、错误类型、调用链中的文件名/行号/函数名；**不写入**异常值、源代码、局部变量、姓名、学号、口令或图像。
 - 日志仍可能包含本机文件布局信息，应按运行数据管理；删除全部数据时一并删除 `logs/`。
-- 需要排查问题时，可在终端运行 `python GUI.py` 观察输出；不要公开粘贴未脱敏的完整日志或截图。
+- 需要排查问题时，可在终端运行 `python app_entry.py` 观察输出；不要公开粘贴未脱敏的完整日志或截图。
 
 ## 9. 泄露事件处置（建议）
 
@@ -150,7 +150,7 @@ restore_status.json
 
 1. 立即停止使用并隔离相关设备/仓库；
 2. 尽可能删除/撤回公开数据，但**不要假设可以完全撤回**（Git 历史、fork、缓存、下载副本可能仍存在）；
-3. 重置管理密码（需要持有数据库文件权限时使用 `reset_admin.py`）；
+3. 重置管理密码（需要持有数据库文件权限时使用 `classroom_attendance/maintenance/reset_admin.py`）；
 4. 评估是否需要删除/轮换数据、通知受影响的学生/监护人/学校；
 5. 记录事件经过、范围、处置与通知情况；
 6. 检查是否存在其他泄露渠道（备份、导出表格、聊天记录、截图）。

@@ -11,14 +11,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from app_errors import TaskCancelled, TaskTimeout
-from attendance_store import AttendanceStore
-from automatic_backup import AutomaticBackup, SETTINGS_KEY, STATE_KEY
-from automatic_backup_ui import backup_status
-from backup_service import inspect_backup, restore_backup
-from resource_lock import ResourceLease
-from task_runtime import TaskControl, current_control
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.core.app_errors import TaskCancelled, TaskTimeout
+from classroom_attendance.storage.attendance_store import AttendanceStore
+from classroom_attendance.storage.automatic_backup import AutomaticBackup, SETTINGS_KEY, STATE_KEY
+from classroom_attendance.storage.automatic_backup_ui import backup_status
+from classroom_attendance.storage.backup_service import inspect_backup, restore_backup
+from classroom_attendance.core.resource_lock import ResourceLease
+from classroom_attendance.core.task_runtime import TaskControl, current_control
 
 
 class AutomaticBackupFixture(unittest.TestCase):
@@ -96,7 +96,7 @@ class AutomaticBackupTests(AutomaticBackupFixture):
     def test_failures_back_off_ten_minutes_and_preserve_previous_success(self):
         self.configure()
         self.service.run_due(now=self.now-timedelta(days=1))
-        with patch('automatic_backup.create_backup', side_effect=OSError('private path')) as create:
+        with patch('classroom_attendance.storage.automatic_backup.create_backup', side_effect=OSError('private path')) as create:
             result = self.service.run_due(now=self.now)
             self.assertEqual(result['outcome'], 'error')
             self.assertEqual(self.service.run_due(now=self.now+timedelta(minutes=9))['outcome'], 'idle')
@@ -187,7 +187,7 @@ class AutomaticBackupTests(AutomaticBackupFixture):
         self.configure(keep=1)
         self.service.run_due(now=self.now)
         first = self.archives()[0]
-        with patch('automatic_backup.create_backup', side_effect=OSError('disk')):
+        with patch('classroom_attendance.storage.automatic_backup.create_backup', side_effect=OSError('disk')):
             self.assertEqual(self.service.run_due(now=self.now+timedelta(days=1))['outcome'], 'error')
         self.assertTrue(first.exists())
 
@@ -225,8 +225,8 @@ class AutomaticBackupTests(AutomaticBackupFixture):
         self.configure(keep=1)
         self.service.run_due(now=self.now)
         first = self.archives()[0]
-        from automatic_backup import _linked
-        with patch('automatic_backup._linked', side_effect=lambda path: path == first or _linked(path)):
+        from classroom_attendance.storage.automatic_backup import _linked
+        with patch('classroom_attendance.storage.automatic_backup._linked', side_effect=lambda path: path == first or _linked(path)):
             result = self.service.run_due(now=self.now+timedelta(days=1))
         self.assertEqual(result['outcome'], 'warning')
         self.assertTrue(first.exists())
@@ -248,7 +248,7 @@ class AutomaticBackupTests(AutomaticBackupFixture):
             raise TaskCancelled()
         token = current_control.set(control)
         try:
-            with patch('automatic_backup.create_backup', side_effect=cancel), self.assertRaises(TaskCancelled):
+            with patch('classroom_attendance.storage.automatic_backup.create_backup', side_effect=cancel), self.assertRaises(TaskCancelled):
                 self.service.run_due(now=self.now)
         finally:
             current_control.reset(token)
@@ -265,7 +265,7 @@ class AutomaticBackupTests(AutomaticBackupFixture):
             raise TaskTimeout()
         token = current_control.set(control)
         try:
-            with patch('automatic_backup.create_backup', side_effect=timeout):
+            with patch('classroom_attendance.storage.automatic_backup.create_backup', side_effect=timeout):
                 result = self.service.run_due(now=self.now)
         finally:
             current_control.reset(token)
@@ -278,7 +278,7 @@ class AutomaticBackupGuiTests(AutomaticBackupFixture):
     def setUp(self):
         super().setUp()
         self.root = tk.Tk()
-        with patch('admin_app.model_health', return_value=(False, '模型未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '模型未训练', None)):
             self.admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.panel = self.admin.automatic_backup
         self.root.update_idletasks()
@@ -310,7 +310,7 @@ class AutomaticBackupGuiTests(AutomaticBackupFixture):
 
     def test_failure_and_cleanup_warning_are_visible_on_home(self):
         self.configure_panel()
-        with patch('automatic_backup.create_backup', side_effect=PermissionError('private')):
+        with patch('classroom_attendance.storage.automatic_backup.create_backup', side_effect=PermissionError('private')):
             self.panel.start(force=True)
         self.assertIn('失败', self.panel.status.get())
         self.assertIn('自动备份需处理', self.admin.dashboard.health_text.get())
@@ -345,7 +345,7 @@ class AutomaticBackupGuiTests(AutomaticBackupFixture):
         def slow(*args, **kwargs):
             started.set()
             release.wait(3)
-            from task_runtime import checkpoint
+            from classroom_attendance.core.task_runtime import checkpoint
             checkpoint()
         with patch.object(self.panel.service, 'run_due', side_effect=slow) as run:
             self.panel.start(force=True)

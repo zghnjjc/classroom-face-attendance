@@ -18,22 +18,22 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from admin_app import AdminApp, AdminLogin
-from app_errors import CameraError, TaskTimeout, configure_logging, log_error, user_message
-from app_startup import StartupController
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp, AdminLogin
+from classroom_attendance.core.app_errors import CameraError, TaskTimeout, configure_logging, log_error, user_message
+from classroom_attendance.core.app_startup import StartupController
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
 from _flow_test_support import pump_flows
-from camera_device import ProcessCapture, TimedCapture
-from camera_service import CameraWorker
-from face_privacy import delete_face_data
-from face_utils import load_recognizer, read_gray
-from face_utils import save_gray
-from reset_admin import reset_admin
-from student_app import StudentApp
-from task_runtime import IO, TaskControl, checkpoint, current_control
-from train import manifest_path, model_health, preprocess, train_model
-from ui_common import BaseWindow
+from classroom_attendance.camera.camera_device import ProcessCapture, TimedCapture
+from classroom_attendance.camera.camera_service import CameraWorker
+from classroom_attendance.faces.face_privacy import delete_face_data
+from classroom_attendance.faces.face_utils import load_recognizer, read_gray
+from classroom_attendance.faces.face_utils import save_gray
+from classroom_attendance.maintenance.reset_admin import reset_admin
+from classroom_attendance.ui.student_app import StudentApp
+from classroom_attendance.core.task_runtime import IO, TaskControl, checkpoint, current_control
+from classroom_attendance.faces.train import manifest_path, model_health, preprocess, train_model
+from classroom_attendance.ui.ui_common import BaseWindow
 
 
 def hold_write_lock(path, pipe, seconds):
@@ -60,7 +60,7 @@ class TemporaryCase(unittest.TestCase):
         self.now=datetime.now().replace(microsecond=0)
         configure_logging(self.folder/"logs",max_bytes=4096,backup_count=2)
         def close_logs():
-            from app_errors import logger
+            from classroom_attendance.core.app_errors import logger
             for handler in list(logger.handlers):
                 logger.removeHandler(handler); handler.close()
             logger.addHandler(logging.NullHandler())
@@ -72,7 +72,7 @@ class TemporaryCase(unittest.TestCase):
             image=np.random.default_rng(int(sid)).integers(40,210,(160,160),dtype=np.uint8)
             save_gray(self.dataset/f"{sid}.0.jpg",image)
         authorize_faces(self.store)
-        with patch("train.DATA_LOCK_PATH",self.folder/"samples.lock"):
+        with patch("classroom_attendance.faces.train.DATA_LOCK_PATH",self.folder/"samples.lock"):
             train_model(self.dataset,self.model,{"001","002"})
 
     def open_session(self):
@@ -120,7 +120,7 @@ class A4CameraTests(unittest.TestCase):
         parent.recv.side_effect=EOFError()
         context.Pipe.return_value=(parent,child)
         context.Process.return_value.is_alive.return_value=True
-        with patch("camera_device.multiprocessing.get_context",return_value=context):
+        with patch("classroom_attendance.camera.camera_device.multiprocessing.get_context",return_value=context):
             with self.assertRaises(CameraError) as raised:
                 ProcessCapture(0)
         self.assertIn("摄像头",user_message(raised.exception))
@@ -142,7 +142,7 @@ class A4CameraTests(unittest.TestCase):
         capture.release.assert_called_once()
 
     def test_stop_interrupts_blocked_read_without_waiting_for_timeout(self):
-        from app_errors import TaskCancelled
+        from classroom_attendance.core.app_errors import TaskCancelled
         unblock=threading.Event(); stop=threading.Event()
         capture=Mock(); capture.read.side_effect=lambda:unblock.wait(10)
         capture.release.side_effect=unblock.set
@@ -264,7 +264,7 @@ class A6FaceDeletionTests(TemporaryCase):
         old_model=self.model.read_bytes()
         with self.assertRaises(ValueError):
             delete_face_data(self.store,"wrong","001",dataset=self.dataset,model=self.model)
-        with patch("face_privacy.train_model",side_effect=OSError("disk full")):
+        with patch("classroom_attendance.faces.face_privacy.train_model",side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.delete(student_id="001")
         self.assertTrue((self.dataset/"001.0.jpg").exists())
@@ -304,7 +304,7 @@ class AsyncGuiTests(TemporaryCase):
         pump_flows(self, self.root, predicate=predicate, timeout=timeout)
 
     def admin(self):
-        with patch("admin_app.model_health",return_value=(False,"请先训练",None)):
+        with patch("classroom_attendance.ui.admin_app.model_health",return_value=(False,"请先训练",None)):
             app=AdminApp(self.root,self.store,authenticated=True)
             self.wait(lambda:not app._running_flows)
         return app
@@ -312,7 +312,7 @@ class AsyncGuiTests(TemporaryCase):
     def test_manual_camera_stop_updates_status_without_hiding_camera_error(self):
         self.store.save_student("001","临时学生","测试班")
         sid=self.open_session()
-        with patch("student_app.model_health",return_value=(True,"模型已就绪",{})):
+        with patch("classroom_attendance.ui.student_app.model_health",return_value=(True,"模型已就绪",{})):
             app=StudentApp(self.root,self.store,async_io=False)
         def worker():
             value=Mock();value.events=queue.Queue();value.take_frame.return_value=None
@@ -372,9 +372,9 @@ class AsyncGuiTests(TemporaryCase):
         self.assertFalse(self.errors)
 
     def test_three_entrypoints_use_common_startup_guard(self):
-        import GUI,admin_app,student_app
+        import classroom_attendance.ui.launcher as GUI, classroom_attendance.ui.admin_app as admin_app, classroom_attendance.ui.student_app as student_app
         factories=[]
-        with patch("app_startup.launch_entry",side_effect=lambda factory, **kwargs: factories.append((factory, kwargs.get('role','launcher')))):
+        with patch("classroom_attendance.core.app_startup.launch_entry",side_effect=lambda factory, **kwargs: factories.append((factory, kwargs.get('role','launcher')))):
             for module in (GUI,admin_app,student_app): module.main()
         self.assertEqual(len(factories),3)
         self.assertEqual([role for factory, role in factories],['launcher','admin','student'])
@@ -442,7 +442,7 @@ class AsyncGuiTests(TemporaryCase):
             called.append(threading.get_ident())
             return original(*args,**kwargs)
         output=self.folder/"export.xlsx"
-        with patch("admin_app.filedialog.asksaveasfilename",return_value=str(output)),patch.object(self.store,"export_attendance",side_effect=export):
+        with patch("classroom_attendance.ui.admin_app.filedialog.asksaveasfilename",return_value=str(output)),patch.object(self.store,"export_attendance",side_effect=export):
             app.export()
             pump_flows(self, self.root, app, predicate=output.exists)
         self.assertNotEqual(called[0],threading.get_ident())
@@ -455,7 +455,7 @@ class AsyncGuiTests(TemporaryCase):
             release.wait(2); checkpoint()
             finished.append(True)
         app.run_job("等待测试",work)
-        with patch("ui_common.messagebox.askyesno",return_value=True):
+        with patch("classroom_attendance.ui.ui_common.messagebox.askyesno",return_value=True):
             self.assertTrue(app.close())
         release.set()
         self.assertTrue(app.closed)

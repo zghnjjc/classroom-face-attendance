@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from backup_service import SnapshotSource, create_backup, database_schema, database_summary, inspect_backup, restore_backup
-from course_schedule import course_times, expand_course, normalize_course
-from student_app import StudentApp
+from classroom_attendance.storage.backup_service import SnapshotSource, create_backup, database_schema, database_summary, inspect_backup, restore_backup
+from classroom_attendance.courses.course_schedule import course_times, expand_course, normalize_course
+from classroom_attendance.ui.student_app import StudentApp
 
 
 class TimeFixture(unittest.TestCase):
@@ -301,9 +301,9 @@ class SessionTimeGuiTests(TimeFixture):
     def setUp(self):
         super().setUp()
         self.root = tk.Tk()
-        self.errors = patch('admin_app.messagebox.showerror').start()
+        self.errors = patch('classroom_attendance.ui.admin_app.messagebox.showerror').start()
         self.addCleanup(patch.stopall)
-        with patch('admin_app.model_health', return_value=(False, '未训练', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '未训练', None)):
             self.admin = AdminApp(self.root, self.store, authenticated=True, async_io=False)
         self.addCleanup(self.cleanup)
         self.root.update()
@@ -333,7 +333,7 @@ class SessionTimeGuiTests(TimeFixture):
         session_id = self.session()
         self.store.open_session(session_id, self.now)
         root = tk.Toplevel(self.root)
-        with patch('student_app.model_health', return_value=(True, '就绪', {})):
+        with patch('classroom_attendance.ui.student_app.model_health', return_value=(True, '就绪', {})):
             student = StudentApp(root, self.store, async_io=False)
         self.root.update_idletasks()
         self.assertEqual(student.current_session['id'], session_id)

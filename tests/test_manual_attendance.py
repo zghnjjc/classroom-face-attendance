@@ -12,12 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from admin_app import AdminApp
-from attendance_store import AttendanceStore
+from classroom_attendance.ui.admin_app import AdminApp
+from classroom_attendance.storage.attendance_store import AttendanceStore
 from _face_test_support import authorize_faces
-from manual_attendance import ManualAttendanceDialog
-from task_runtime import TaskControl, checkpoint, current_control
-from app_errors import TaskCancelled
+from classroom_attendance.attendance.manual_attendance import ManualAttendanceDialog
+from classroom_attendance.core.task_runtime import TaskControl, checkpoint, current_control
+from classroom_attendance.core.app_errors import TaskCancelled
 
 
 class ManualFixture(unittest.TestCase):
@@ -246,10 +246,10 @@ class ManualAttendanceGuiTests(ManualFixture):
     def setUp(self):
         super().setUp()
         self.root = tk.Tk()
-        self.errors = patch('manual_attendance.messagebox.showerror').start()
-        self.confirm = patch('manual_attendance.messagebox.askyesno', return_value=True).start()
+        self.errors = patch('classroom_attendance.attendance.manual_attendance.messagebox.showerror').start()
+        self.confirm = patch('classroom_attendance.attendance.manual_attendance.messagebox.askyesno', return_value=True).start()
         self.addCleanup(patch.stopall)
-        with patch('admin_app.model_health', return_value=(False, '模型未就绪', None)):
+        with patch('classroom_attendance.ui.admin_app.model_health', return_value=(False, '模型未就绪', None)):
             self.app = AdminApp(self.root, self.store, authenticated=True, async_io=False)
 
     def tearDown(self):
