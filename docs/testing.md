@@ -84,7 +84,7 @@ py -3.11 -m venv .venv
 | `tests/test_freeze_fixes.py` | 18 | 授权/告知表单内失败反馈与重试、取消及读取设置时取消、消息框模态父窗口与后续轮询、超时/取消后线程占位、只读版本拒绝、删除移样本/换模型/提交后强制退出恢复、审计回滚、未知旧暂存与变化文件保护、未恢复时停止训练及备份 |
 | `tests/test_login_edges.py` | 19 | 复核后关闭保留完成状态、旧用户复核不创建进度、确认/取消显式重置、只读准备及写事务竞态复核、占写锁时显示登录页、传递已知进度、登录/向导/启动/设置弹窗构造失败后恢复重试、首次密码持久化、完成幂等、定时器令牌及时移除 |
 
-合计：502 项。`tests/_face_test_support.py` 为合成刷脸用例登记测试告知与授权，`tests/_flow_test_support.py` 推进真实异步事件循环；辅助文件不计入测试文件数，不修改生产门禁。
+合计：506 项（`unittest discover` 实测）。`tests/_face_test_support.py` 为合成刷脸用例登记测试告知与授权，`tests/_flow_test_support.py` 推进真实异步事件循环；辅助文件不计入测试文件数，不修改生产门禁。
 
 ## 5. GUI / 桌面依赖
 
@@ -102,7 +102,7 @@ py -3.11 -m venv .venv
 - 权限：`contents: read`；
 - 步骤：checkout → setup-python（pip 缓存，以 `requirements-lock.txt` 为 key）→ `pip install -r requirements-lock.txt` → `pip check` → Tk 冒烟 → `python -m unittest discover -s tests -v`；
 - 环境变量：`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`；
-- 超时：20 分钟；并发同分支自动取消旧任务。
+- 超时：测试工作流 20 分钟，发行包构建工作流 40 分钟；并发同分支自动取消旧任务。
 
 README 首屏的 CI 徽章在首次推送并运行工作流后才会显示真实状态；本仓库目前不包含 CI 运行结果截图。
 

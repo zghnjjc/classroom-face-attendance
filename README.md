@@ -1,5 +1,9 @@
 # 课堂签到 · Classroom Face Attendance
 
+[![tests](https://github.com/zghnjjc/classroom-face-attendance/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/zghnjjc/classroom-face-attendance/actions/workflows/tests.yml)
+[![release](https://img.shields.io/github/v/release/zghnjjc/classroom-face-attendance?label=release)](https://github.com/zghnjjc/classroom-face-attendance/releases)
+[![license](https://img.shields.io/github/license/zghnjjc/classroom-face-attendance)](LICENSE)
+
 一个用 Python 和 OpenCV 编写的 Windows 课堂考勤桌面项目，支持**人脸签到、人工点名、课次管理和 Excel 报表**。程序在本机离线运行，数据保存在本地。
 
 > **当前状态：开发与验证阶段，适合学习、演示和功能体验，暂不建议直接用于正式课堂考勤。**
@@ -43,7 +47,7 @@ py -3.11 -m venv .venv
 
 要体验刷脸，请使用本人或明确同意参与测试者的资料：**登记人脸授权 → 采集样本 → 更新识别模型 → 创建并开启课次 → 进入“学生签到”**。没有有效授权、样本和模型时，无法直接刷脸签到。
 
-目前以源码方式体验，尚未发布可直接下载的 EXE 发行包。桌面快捷方式和自行打包的方法见 [启动与构建说明](docs/deployment.md)。
+也可以在 [Releases](https://github.com/zghnjjc/classroom-face-attendance/releases) 下载 Windows x64 便携解压包：无需安装 Python，解压后双击 `ClassroomAttendance.exe`。发行包未签名，首次运行 Windows 可能提示“未知发布者”，请先核对 Release 页面公布的 SHA-256 再决定是否运行；源码运行、自行打包与桌面快捷方式见 [启动与构建说明](docs/deployment.md)。
 
 ## 使用前需要知道
 

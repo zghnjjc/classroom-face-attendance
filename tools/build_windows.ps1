@@ -60,7 +60,10 @@ if (Get-ChildItem -LiteralPath $buildBundle -Recurse -File -Filter '*.bat') {
 Copy-Item -LiteralPath (Join-Path $buildProject 'docs/deployment.md') -Destination (Join-Path $buildBundle '使用说明.md')
 Copy-Item -LiteralPath (Join-Path $buildProject 'docs/maintenance.md') -Destination (Join-Path $buildBundle '现场维护说明.md')
 Copy-Item -LiteralPath (Join-Path $buildProject 'docs/face-lifecycle.md') -Destination (Join-Path $buildBundle '人脸授权与清理说明.md')
-$buildZip = Join-Path $buildOutput 'ClassroomAttendance-0.2.0-preview10-win-x64.zip'
+$appConfigText = Get-Content -LiteralPath (Join-Path $buildProject 'classroom_attendance/core/app_config.py') -Raw
+if ($appConfigText -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') { throw '无法从 app_config.py 读取程序版本号。' }
+$appVersion = $Matches[1]
+$buildZip = Join-Path $buildOutput ('ClassroomAttendance-' + $appVersion + '-win-x64.zip')
 Compress-Archive -LiteralPath $buildBundle -DestinationPath $buildZip -Force
 $buildHash = (Get-FileHash -LiteralPath $buildZip -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText($buildZip + '.sha256', $buildHash + '  ' + [System.IO.Path]::GetFileName($buildZip) + "`n", [System.Text.UTF8Encoding]::new($false))

@@ -9,7 +9,7 @@ import sys
 BASE_DIR = Path(__file__).resolve().parents[2]
 RESOURCE_DIR = BASE_DIR / "resources"
 PROGRAM_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE_DIR
-APP_VERSION = "0.2.0-preview10"
+APP_VERSION = "0.2.0"
 
 
 def default_data_dir():

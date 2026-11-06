@@ -2,7 +2,7 @@
 
 > 本页面向自行构建和验证的开发者。当前项目处于开发预览阶段，数据仍在整理，真实课堂验证尚未完成；下文的构建和恢复步骤不代表已具备正式部署条件。首次体验可先看 [项目首页](../README.md#怎么运行)。
 
-本版本提供 Windows x64 解压发行包。使用者无需安装 Python；构建发行包的开发者需要 Python 3.11。下载与安装构建依赖需要网络，发行包日常运行不需要网络。
+本版本提供 Windows x64 解压发行包，可从 [Releases](https://github.com/zghnjjc/classroom-face-attendance/releases) 下载。使用者无需安装 Python；构建发行包的开发者需要 Python 3.11。下载与安装构建依赖需要网络，发行包日常运行不需要网络。
 
 源码根目录保持单一 `app_entry.py` 入口；可选的旧 BAT 集中在 `tools/launchers/`，不加入新构建的发行包。本机源码运行使用 `tools/create_shortcuts.ps1` 生成的三个桌面快捷方式；发行包直接双击 `ClassroomAttendance.exe`，保留完整的 `_internal/` 目录。
 
